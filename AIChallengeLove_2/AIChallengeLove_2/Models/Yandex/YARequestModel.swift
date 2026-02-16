@@ -6,7 +6,7 @@
 //
 
 nonisolated struct YARequestModel: Codable, Sendable {
-    let modelUri: String = "gpt://b1gc85f71kptfnt0557k/yandexgpt/rc"
+    let modelUri: String = "gpt:///yandexgpt/rc"
     let completionOptions: CompletionOptions
     let messages: [YAMessage]
     let toolChoice = YAToolChoice(mode: "AUTO")
