@@ -29,21 +29,33 @@ struct ChatDetailView: View {
     }
 
     private var header: some View {
-        HStack {
-            gptTypeButton
+        VStack {
+            HStack {
+                gptTypeButton
 
-            clearChat
+                clearChat
 
-            Spacer()
+                Spacer()
 
-            Button {
-                viewModel.isShowInfo.toggle()
-            } label: {
-                Image(systemName: "exclamationmark.circle")
+                Toggle("Ограничение ответа", isOn: $viewModel.isStrictMode)
+                    .tint(.orange)
+
+                Button {
+                    viewModel.isShowInfo.toggle()
+                } label: {
+                    Image(systemName: "exclamationmark.circle")
+                }
+                .padding()
             }
-            .padding()
+            .background(Color.gray.opacity(0.2))
+
+            if viewModel.isStrictMode {
+                Text("Режим: Формат + Лимит 20 слов + Stop-слово")
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                    .padding(.vertical, 4)
+            }
         }
-        .background(Color.gray.opacity(0.2))
     }
 
     private var chatView: some View {
@@ -63,8 +75,10 @@ struct ChatDetailView: View {
 
             // Поле ввода и кнопка отправки
             HStack {
-                TextField("Сообщение...", text: $viewModel.inputText)
-                    .padding()
+                TextField("Сообщение...", text: $viewModel.inputText, axis: .vertical)
+                    .lineLimit(1...5) // Минимум 1 строка, максимум 5, далее — скролл
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .background(Color.gray.opacity(0.2))
                     .cornerRadius(8)
 

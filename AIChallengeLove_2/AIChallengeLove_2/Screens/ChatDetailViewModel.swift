@@ -20,6 +20,7 @@ final class ChatDetailViewModel {
     var isShowInfo: Bool = true
     var info: Info = .init()
     var isActiveCollapseDialog = false
+    var isStrictMode = false
 
     let network: NetworkService
 
@@ -35,7 +36,9 @@ final class ChatDetailViewModel {
         let newMessage = Message(role: .user, content: inputText)
         messages.append(newMessage)
 
-        sendMessages(messages) { [weak self] responseMessage in
+        let messagesToSend = prepareMessagesForAPI()
+
+        sendMessages(messagesToSend) { [weak self] responseMessage in
             guard let self else { return }
             messages.append(responseMessage)
         }
@@ -48,6 +51,25 @@ final class ChatDetailViewModel {
     }
 
     // MARK: - Private
+
+    private func prepareMessagesForAPI() -> [Message] {
+        var processedMessages = messages
+
+        if isStrictMode {
+            // 1. Добавляем явное описание формата (JSON или список)
+            // 2. Добавляем условие завершения (стоп-фраза "КОНЕЦ")
+            let instruction = Message(role: .system, content: """
+                ОТВЕЧАЙ СТРОГО ПО ФОРМАТУ:
+                1. Краткий ответ (до 10 слов на весь ответ).
+                2. В конце обязательно пиши слово 'КОНЕЦ' если ты уложился в ограничение ответа.
+                3. после слова СТОП ты должен перестать отвечать если не закончил.
+                Используй только маркированные списки.
+                """)
+            processedMessages.insert(instruction, at: 0)
+        }
+
+        return processedMessages
+    }
 
     private func sendMessages(_ messages: [Message], completion: @escaping (Message) -> Void) {
         withAnimation {
