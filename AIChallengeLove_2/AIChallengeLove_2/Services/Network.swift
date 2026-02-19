@@ -51,7 +51,7 @@ class NetworkService {
         let dto = RequestModel(model: .chat2,
                                messages: messages,
                                temperature: 0,
-                               maxTokens: 500,
+                               maxTokens: nil,
                                repetitionPenalty: 1,
                                updateInterval: 0,
                                functions: [],

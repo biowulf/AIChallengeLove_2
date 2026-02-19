@@ -9,7 +9,7 @@ nonisolated struct RequestModel: Encodable, Sendable {
     let model: GigaChatModel
     let messages: [Message]
     let temperature: Float
-    let maxTokens: Int
+    let maxTokens: Int?
     let repetitionPenalty: Float
     let updateInterval: Int
     let functionCall = "auto"
