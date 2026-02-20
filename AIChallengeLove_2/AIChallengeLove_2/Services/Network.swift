@@ -41,6 +41,8 @@ class NetworkService {
 
     func fetch(for newMessages: [Message],
                format: Format = .text,
+               maxTokens: Int? = nil,
+               temperature: Float = 0,
                completion: @escaping (Result<ResponsePayload, AFError>) -> Void) {
 
         var messages: [Message] = newMessages
@@ -50,8 +52,8 @@ class NetworkService {
 
         let dto = RequestModel(model: .chat2,
                                messages: messages,
-                               temperature: 0,
-                               maxTokens: nil,
+                               temperature: temperature,
+                               maxTokens: maxTokens,
                                repetitionPenalty: 1,
                                updateInterval: 0,
                                functions: [],
@@ -73,6 +75,8 @@ class NetworkService {
 
     func fetchYA(for newMessages: [Message],
                format: Format = .text,
+               maxTokens: Int? = nil,
+               temperature: Float = 0,
                completion: @escaping (Result<YAResponse, AFError>) -> Void) {
 
         var messages: [Message] = newMessages
@@ -81,8 +85,8 @@ class NetworkService {
         }
 
         let dto = YARequestModel(completionOptions: .init(stream: false,
-                                                          temperature: 0,
-                                                          maxTokens: 500),
+                                                          temperature: temperature,
+                                                          maxTokens: maxTokens),
                                  messages: messages.compactMap({ .init(role: $0.role,
                                                                        text: $0.content) }))
 

@@ -70,6 +70,7 @@ final class RequestInterceptor: Alamofire.RequestInterceptor {
                     case .failure(_ ): break
                     }
                 }
+                return
             }
         }
 

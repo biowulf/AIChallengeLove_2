@@ -21,8 +21,7 @@ struct ChatDetailView: View {
             HStack {
                 chatView
                 if viewModel.isShowInfo {
-                    InfoView()
-                        .environment(viewModel)
+                    InfoView(viewModel: viewModel)
                 }
             }
         }

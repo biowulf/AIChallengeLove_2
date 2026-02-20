@@ -21,6 +21,8 @@ final class ChatDetailViewModel {
     var info: Info = .init()
     var isActiveCollapseDialog = false
     var isStrictMode = false
+    var maxTokensText: String = ""
+    var temperature: Double = 0
 
     let network: NetworkService
 
@@ -76,9 +78,12 @@ final class ChatDetailViewModel {
             isLoading = true
         }
 
+        let maxTokens = Int(maxTokensText)
+        let temperature = Float(temperature)
+
         switch gptAPI {
         case .gigachat:
-            network.fetch(for: messages) { [weak self] result in
+            network.fetch(for: messages, maxTokens: maxTokens, temperature: temperature) { [weak self] result in
                 guard let self else { return }
                 isLoading = false
                 switch result {
@@ -110,7 +115,7 @@ final class ChatDetailViewModel {
                 }
             }
         case .yandex:
-            network.fetchYA(for: messages) { [weak self] result in
+            network.fetchYA(for: messages, maxTokens: maxTokens, temperature: temperature) { [weak self] result in
                 guard let self else { return }
                 isLoading = false
                 switch result {
