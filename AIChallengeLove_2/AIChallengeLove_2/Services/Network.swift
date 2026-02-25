@@ -40,6 +40,7 @@ class NetworkService {
     }
 
     func fetch(for newMessages: [Message],
+               model: GigaChatModel = .chat2,
                format: Format = .text,
                maxTokens: Int? = nil,
                temperature: Float = 0,
@@ -50,7 +51,7 @@ class NetworkService {
             messages.insert(addJSONSystemPromt(), at: 0)
         }
 
-        let dto = RequestModel(model: .chat2,
+        let dto = RequestModel(model: model,
                                messages: messages,
                                temperature: temperature,
                                maxTokens: maxTokens,

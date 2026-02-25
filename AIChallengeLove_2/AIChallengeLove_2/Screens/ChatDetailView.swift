@@ -31,6 +31,11 @@ struct ChatDetailView: View {
         VStack {
             HStack {
                 gptTypeButton
+                
+                // Выбор модели GigaChat
+                if viewModel.gptAPI == .gigachat {
+                    gigaChatModelButton
+                }
 
                 clearChat
 
@@ -134,5 +139,35 @@ struct ChatDetailView: View {
             }
         }
         .padding()
+    }
+    
+    private var gigaChatModelButton: some View {
+        Button {
+            viewModel.isActiveModelDialog = true
+        } label: {
+            HStack {
+                Text(viewModel.gigaChatModel.rawValue)
+                    .font(.caption)
+                Image(systemName: "chevron.down")
+                    .font(.caption)
+                    .foregroundColor(.accentColor)
+            }
+        }
+        .padding(.horizontal, 8)
+        .confirmationDialog("Выберите модель GigaChat", isPresented: $viewModel.isActiveModelDialog) {
+            ForEach(GigaChatModel.allCases, id: \.self) { model in
+                Button {
+                    viewModel.gigaChatModel = model
+                } label: {
+                    HStack {
+                        Text(model.rawValue)
+                        if model == viewModel.gigaChatModel {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                }
+            }
+        }
     }
 }

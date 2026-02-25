@@ -17,6 +17,8 @@ final class ChatDetailViewModel {
     var isLoading = false
     var isActiveDialog = false
     var gptAPI: GPTAPI = .gigachat
+    var gigaChatModel: GigaChatModel = .chat2 // Выбранная модель GigaChat
+    var isActiveModelDialog = false // Диалог выбора модели
     var isShowInfo: Bool = true
     var info: Info = .init()
     var isActiveCollapseDialog = false
@@ -83,7 +85,7 @@ final class ChatDetailViewModel {
 
         switch gptAPI {
         case .gigachat:
-            network.fetch(for: messages, maxTokens: maxTokens, temperature: temperature) { [weak self] result in
+            network.fetch(for: messages, model: gigaChatModel, maxTokens: maxTokens, temperature: temperature) { [weak self] result in
                 guard let self else { return }
                 isLoading = false
                 switch result {
