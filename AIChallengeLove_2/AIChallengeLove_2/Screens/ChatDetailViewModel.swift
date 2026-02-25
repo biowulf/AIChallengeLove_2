@@ -13,12 +13,12 @@ import SwiftUI
 @Observable
 final class ChatDetailViewModel {
     var inputText = ""
-    var messages: [Message] = [] // Хранение сообщений
+    var messages: [Message] = []
     var isLoading = false
     var isActiveDialog = false
     var gptAPI: GPTAPI = .gigachat
-    var gigaChatModel: GigaChatModel = .chat2 // Выбранная модель GigaChat
-    var isActiveModelDialog = false // Диалог выбора модели
+    var gigaChatModel: GigaChatModel = .chat2
+    var isActiveModelDialog = false
     var isShowInfo: Bool = true
     var info: Info = .init()
     var isActiveCollapseDialog = false
@@ -27,9 +27,13 @@ final class ChatDetailViewModel {
     var temperature: Double = 0
 
     let network: NetworkService
+    private let messageStorage = MessageStorage()
 
     init(network: NetworkService) {
         self.network = network
+        // Загружаем сохранённые сообщения и статистику при инициализации
+        self.messages = messageStorage.loadMessages()
+        self.info = messageStorage.loadInfo()
     }
 
     // MARK: - Public
@@ -45,6 +49,7 @@ final class ChatDetailViewModel {
         sendMessages(messagesToSend) { [weak self] responseMessage in
             guard let self else { return }
             messages.append(responseMessage)
+            messageStorage.saveMessages(messages)
         }
 
         inputText = "" // очищаем поле ввода
@@ -52,6 +57,12 @@ final class ChatDetailViewModel {
 
     func clearChat() {
         messages.removeAll()
+        messageStorage.clearMessages()
+    }
+    
+    func clearSessionStats() {
+        info.session[gptAPI] = SessionGPT(input: 0, output: 0, total: 0)
+        messageStorage.saveInfo(info)
     }
 
     // MARK: - Private
@@ -85,7 +96,7 @@ final class ChatDetailViewModel {
 
         switch gptAPI {
         case .gigachat:
-            network.fetch(for: messages, model: gigaChatModel, maxTokens: maxTokens, temperature: temperature) { [weak self] result in
+            network.fetch(for: messages, maxTokens: maxTokens, temperature: temperature) { [weak self] result in
                 guard let self else { return }
                 isLoading = false
                 switch result {
@@ -112,6 +123,8 @@ final class ChatDetailViewModel {
                     appSession.output += usage.completionTokens
                     appSession.total += usage.totalTokens
                     info.appSession[gptAPI] = appSession
+
+                    messageStorage.saveInfo(info)
                 case .failure(let error):
                     print("Ошибка запроса: ", error.localizedDescription)
                 }
@@ -144,6 +157,8 @@ final class ChatDetailViewModel {
                     appSession.output += Int(usage.completionTokens) ?? 0
                     appSession.total += Int(usage.totalTokens) ?? 0
                     info.appSession[gptAPI] = appSession
+
+                    messageStorage.saveInfo(info)
                 case .failure(let error):
                     print("Ошибка запроса: ", error.localizedDescription)
                 }

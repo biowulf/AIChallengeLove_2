@@ -73,8 +73,8 @@ struct InfoView: View {
             Text("Моделью: \(viewModel.info.session[viewModel.gptAPI]?.output ?? 0)")
             Text("Всего токенов: \(viewModel.info.session[viewModel.gptAPI]?.total ?? 0)")
 
-            Button("Сбросить") {
-                viewModel.info.session[viewModel.gptAPI] = .init(input: 0, output: 0, total: 0)
+            Button("Сбросить сессию") {
+                viewModel.clearSessionStats()
             }
             .padding(.top)
             .padding(.bottom, 30)
