@@ -78,3 +78,24 @@ nonisolated struct Usage: Codable, Sendable {
     /// Общее число токенов, подлежащих тарификации, после вычитания кэшированных токенов (поле precached_prompt_tokens).
     let totalTokens: Int
 }
+
+// MARK: - Streaming Response Models
+
+nonisolated struct StreamResponsePayload: Decodable, Sendable {
+    let choices: [StreamChoice]
+    let created: Int?
+    let model: String?
+    let usage: Usage?
+    let object: String?
+}
+
+nonisolated struct StreamChoice: Decodable, Sendable {
+    let delta: Delta
+    let index: Int
+    let finishReason: FinishReason?
+}
+
+nonisolated struct Delta: Decodable, Sendable {
+    let content: String?
+    let role: Role?
+}

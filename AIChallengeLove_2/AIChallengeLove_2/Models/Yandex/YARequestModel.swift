@@ -15,7 +15,7 @@ nonisolated struct YARequestModel: Codable, Sendable {
 nonisolated struct CompletionOptions: Codable, Sendable {
     let stream: Bool
     let temperature: Float
-    let maxTokens: Int
+    let maxTokens: Int?
 }
 
 nonisolated struct YAMessage: Codable, Sendable {

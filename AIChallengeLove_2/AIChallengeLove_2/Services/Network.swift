@@ -69,7 +69,99 @@ class NetworkService {
             print(dump(response.result))
             completion(response.result)
         }
-
+    }
+    
+    /// Streaming запрос к GigaChat с поддержкой Server-Sent Events
+    func fetchStream(for newMessages: [Message],
+                     model: GigaChatModel = .chat2,
+                     format: Format = .text,
+                     maxTokens: Int? = nil,
+                     temperature: Float = 0,
+                     onChunk: @escaping (String) -> Void,
+                     onComplete: @escaping (Usage?) -> Void,
+                     onError: @escaping (Error) -> Void) {
+        
+        var messages: [Message] = newMessages
+        if format == .json && newMessages.first?.role != .system {
+            messages.insert(addJSONSystemPromt(), at: 0)
+        }
+        
+        let dto = RequestModel(model: model,
+                               messages: messages,
+                               temperature: temperature,
+                               maxTokens: maxTokens,
+                               repetitionPenalty: 1,
+                               updateInterval: 0,
+                               functions: [],
+                               stream: true)
+        
+        session.streamRequest("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+                        method: .post,
+                        parameters: dto,
+                        encoder: .json(encoder: encoder))
+        .validate()
+        .responseStreamString { stream in
+            switch stream.event {
+            case .stream(let result):
+                switch result {
+                case .success(let chunk):
+                    self.parseSSE(chunk: chunk, 
+                                 onChunk: onChunk, 
+                                 onComplete: onComplete)
+                case .failure(let error):
+                    onError(error)
+                }
+            case .complete(let completion):
+                if let error = completion.error {
+                    onError(error)
+                }
+            }
+        }
+    }
+    
+    /// Парсинг Server-Sent Events
+    private func parseSSE(chunk: String,
+                         onChunk: @escaping (String) -> Void,
+                         onComplete: @escaping (Usage?) -> Void) {
+        
+        let lines = chunk.components(separatedBy: "\n")
+        
+        for line in lines {
+            // Пропускаем пустые строки
+            guard !line.isEmpty else { continue }
+            
+            // Проверяем на завершающее событие
+            if line.contains("data: [DONE]") {
+                onComplete(nil)
+                return
+            }
+            
+            // Парсим строку data:
+            if line.hasPrefix("data: ") {
+                let jsonString = String(line.dropFirst(6)) // Убираем "data: "
+                
+                guard let jsonData = jsonString.data(using: .utf8) else { continue }
+                
+                do {
+                    // Пытаемся декодировать как streaming response
+                    let streamResponse = try decoder.decode(StreamResponsePayload.self, from: jsonData)
+                    
+                    // Извлекаем текст из delta
+                    if let choice = streamResponse.choices.first,
+                       let content = choice.delta.content {
+                        onChunk(content)
+                    }
+                    
+                    // Проверяем на наличие usage (приходит в предпоследнем событии)
+                    if let usage = streamResponse.usage {
+                        onComplete(usage)
+                    }
+                    
+                } catch {
+                    print("Ошибка декодирования SSE chunk: \(error)")
+                }
+            }
+        }
     }
 
     
@@ -100,7 +192,6 @@ class NetworkService {
             print(dump(response.result))
             completion(response.result)
         }
-
     }
 
     private func addJSONSystemPromt() -> Message {

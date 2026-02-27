@@ -43,6 +43,11 @@ struct ChatDetailView: View {
 
                 Toggle("Ограничение ответа", isOn: $viewModel.isStrictMode)
                     .tint(.orange)
+                
+                if viewModel.gptAPI == .gigachat {
+                    Toggle("Streaming", isOn: $viewModel.useStreaming)
+                        .tint(.green)
+                }
 
                 Button {
                     viewModel.isShowInfo.toggle()
@@ -70,7 +75,22 @@ struct ChatDetailView: View {
                     ForEach(viewModel.messages.indices, id: \.self) { index in
                         MessageBubble(message: viewModel.messages[index])
                     }
-                    if viewModel.isLoading {
+                    
+                    // Показываем streaming сообщение с анимацией печатания
+                    if viewModel.isStreaming && !viewModel.streamingText.isEmpty {
+                        HStack {
+                            TypewriterText(fullText: viewModel.streamingText, 
+                                         isComplete: viewModel.isStreamingComplete)
+                                .padding()
+                                .background(Color.blue.opacity(0.3))
+                                .cornerRadius(10)
+                            Spacer()
+                        }
+                    }
+                    
+                    // Показываем анимированные точки когда ждем ответа
+                    // Или когда текст печатается и мы ждем следующего чанка
+                    if viewModel.isLoading && viewModel.streamingText.isEmpty {
                         LoadingDots()
                     }
                 }
@@ -93,6 +113,7 @@ struct ChatDetailView: View {
                         .foregroundColor(.white)
                         .cornerRadius(8)
                 }
+                .disabled(viewModel.isLoading || viewModel.isStreaming)
             }
             .padding()
         }

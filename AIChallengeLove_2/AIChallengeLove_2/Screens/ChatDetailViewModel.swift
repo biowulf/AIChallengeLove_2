@@ -25,6 +25,12 @@ final class ChatDetailViewModel {
     var isStrictMode = false
     var maxTokensText: String = ""
     var temperature: Double = 0
+    
+    // Streaming properties
+    var isStreaming = false
+    var streamingText = ""
+    var isStreamingComplete = false
+    var useStreaming = true // Переключатель для использования streaming
 
     let network: NetworkService
     private let messageStorage = MessageStorage()
@@ -96,38 +102,17 @@ final class ChatDetailViewModel {
 
         switch gptAPI {
         case .gigachat:
-            network.fetch(for: messages, maxTokens: maxTokens, temperature: temperature) { [weak self] result in
-                guard let self else { return }
-                isLoading = false
-                switch result {
-                case .success(let payload):
-                    if let responseMessage = payload.choices.first?.message {
-                        completion(responseMessage)
-                    }
-                    let usage = payload.usage
-
-                    var requestInfo = info.request[gptAPI] ?? .init(input: 0, output: 0, total: 0)
-                    requestInfo.input = usage.promptTokens
-                    requestInfo.output = usage.completionTokens
-                    requestInfo.total = usage.totalTokens
-                    info.request[gptAPI] = requestInfo
-
-                    var session = info.session[gptAPI] ?? .init(input: 0, output: 0, total: 0)
-                    session.input += usage.promptTokens
-                    session.output += usage.completionTokens
-                    session.total += usage.totalTokens
-                    info.session[gptAPI] = session
-
-                    var appSession = info.appSession[gptAPI] ?? .init(input: 0, output: 0, total: 0)
-                    appSession.input += usage.promptTokens
-                    appSession.output += usage.completionTokens
-                    appSession.total += usage.totalTokens
-                    info.appSession[gptAPI] = appSession
-
-                    messageStorage.saveInfo(info)
-                case .failure(let error):
-                    print("Ошибка запроса: ", error.localizedDescription)
-                }
+            // Используем streaming если включен флаг
+            if useStreaming {
+                sendStreamingRequest(messages: messages, 
+                                   maxTokens: maxTokens, 
+                                   temperature: temperature, 
+                                   completion: completion)
+            } else {
+                sendNonStreamingRequest(messages: messages, 
+                                      maxTokens: maxTokens, 
+                                      temperature: temperature, 
+                                      completion: completion)
             }
         case .yandex:
             network.fetchYA(for: messages, maxTokens: maxTokens, temperature: temperature) { [weak self] result in
@@ -164,5 +149,102 @@ final class ChatDetailViewModel {
                 }
             }
         }
+    }
+    
+    private func sendStreamingRequest(messages: [Message], 
+                                     maxTokens: Int?, 
+                                     temperature: Float, 
+                                     completion: @escaping (Message) -> Void) {
+        // Сбрасываем состояние стрима
+        streamingText = ""
+        isStreamingComplete = false
+        isStreaming = true
+        
+        network.fetchStream(
+            for: messages,
+            model: gigaChatModel,
+            maxTokens: maxTokens,
+            temperature: temperature
+        ) { [weak self] chunk in
+            // Получаем кусочек текста
+            DispatchQueue.main.async {
+                self?.streamingText += chunk
+            }
+        } onComplete: { [weak self] usage in
+            // Стрим завершен
+            guard let self else { return }
+            
+            DispatchQueue.main.async {
+                self.isStreaming = false
+                self.isStreamingComplete = true
+                self.isLoading = false
+                
+                // Создаем финальное сообщение
+                let finalMessage = Message(role: .assistant, content: self.streamingText)
+                completion(finalMessage)
+                
+                // Обновляем статистику если есть usage
+                if let usage = usage {
+                    self.updateUsageStats(usage: usage)
+                }
+                
+                // Сбрасываем streaming text для следующего запроса
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    self.streamingText = ""
+                    self.isStreamingComplete = false
+                }
+            }
+        } onError: { [weak self] error in
+            DispatchQueue.main.async {
+                self?.isStreaming = false
+                self?.isLoading = false
+                self?.streamingText = ""
+                print("Ошибка streaming запроса: ", error.localizedDescription)
+            }
+        }
+    }
+    
+    private func sendNonStreamingRequest(messages: [Message], 
+                                        maxTokens: Int?, 
+                                        temperature: Float, 
+                                        completion: @escaping (Message) -> Void) {
+        network.fetch(for: messages, 
+                     model: gigaChatModel,
+                     maxTokens: maxTokens, 
+                     temperature: temperature) { [weak self] result in
+            guard let self else { return }
+            isLoading = false
+            switch result {
+            case .success(let payload):
+                if let responseMessage = payload.choices.first?.message {
+                    completion(responseMessage)
+                }
+                updateUsageStats(usage: payload.usage)
+            case .failure(let error):
+                print("Ошибка запроса: ", error.localizedDescription)
+            }
+        }
+    }
+    
+    private func updateUsageStats(usage: Usage) {
+        var requestInfo = info.request[gptAPI] ?? .init(input: 0, output: 0, total: 0)
+        requestInfo.input = usage.promptTokens
+        requestInfo.output = usage.completionTokens
+        requestInfo.total = usage.totalTokens
+        info.request[gptAPI] = requestInfo
+
+        var session = info.session[gptAPI] ?? .init(input: 0, output: 0, total: 0)
+        session.input += usage.promptTokens
+        session.output += usage.completionTokens
+        session.total += usage.totalTokens
+        info.session[gptAPI] = session
+
+        var appSession = info.appSession[gptAPI] ?? .init(input: 0, output: 0, total: 0)
+        appSession.input += usage.promptTokens
+        appSession.output += usage.completionTokens
+        appSession.total += usage.totalTokens
+        info.appSession[gptAPI] = appSession
+
+        messageStorage.saveInfo(info)
     }
 }
