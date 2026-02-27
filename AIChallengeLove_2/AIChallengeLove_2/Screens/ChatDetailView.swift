@@ -90,7 +90,7 @@ struct ChatDetailView: View {
                     
                     // Показываем анимированные точки когда ждем ответа
                     // Или когда текст печатается и мы ждем следующего чанка
-                    if viewModel.isLoading && viewModel.streamingText.isEmpty {
+                    if viewModel.isLoading {
                         LoadingDots()
                     }
                 }

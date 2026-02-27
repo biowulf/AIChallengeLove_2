@@ -30,7 +30,7 @@ final class ChatDetailViewModel {
     var isStreaming = false
     var streamingText = ""
     var isStreamingComplete = false
-    var useStreaming = true // Переключатель для использования streaming
+    var useStreaming = false // Переключатель для использования streaming
 
     let network: NetworkService
     private let messageStorage = MessageStorage()
