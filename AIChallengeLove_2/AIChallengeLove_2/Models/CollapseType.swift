@@ -5,6 +5,6 @@
 //  Created by Bolyachev Rostislav on 12/11/25.
 //
 
-enum CollapseType: String, CaseIterable {
+enum CollapseType: String, CaseIterable, Codable {
     case none, cut, gpt
 }

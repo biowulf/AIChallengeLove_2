@@ -14,12 +14,20 @@ struct MessageBubble: View {
         message.role == .user || message.role == .system
     }
 
+    private var formattedContent: AttributedString {
+        (try? AttributedString(
+            markdown: message.content,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(message.content)
+    }
+
     var body: some View {
         HStack {
             if isUser {
                 Spacer()
             }
-            Text(message.content)
+            Text(formattedContent)
+                .textSelection(.enabled)
                 .padding()
                 .background(isUser ? Color.green.opacity(0.3) : Color.blue.opacity(0.3))
                 .cornerRadius(10)

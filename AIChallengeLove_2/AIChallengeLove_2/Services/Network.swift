@@ -125,27 +125,26 @@ class NetworkService {
                          onComplete: @escaping (Usage?) -> Void) {
         
         let lines = chunk.components(separatedBy: "\n")
-        
+
         for line in lines {
             // Пропускаем пустые строки
             guard !line.isEmpty else { continue }
-            
+
             // Проверяем на завершающее событие
             if line.contains("data: [DONE]") {
-                onComplete(nil)
+//                onComplete(nil)
                 return
             }
-            
+
             // Парсим строку data:
             if line.hasPrefix("data: ") {
                 let jsonString = String(line.dropFirst(6)) // Убираем "data: "
-                
+
                 guard let jsonData = jsonString.data(using: .utf8) else { continue }
-                
+
                 do {
-                    // Пытаемся декодировать как streaming response
                     let streamResponse = try decoder.decode(StreamResponsePayload.self, from: jsonData)
-                    
+
                     // Извлекаем текст из delta
                     if let choice = streamResponse.choices.first,
                        let content = choice.delta.content {
@@ -156,7 +155,7 @@ class NetworkService {
                     if let usage = streamResponse.usage {
                         onComplete(usage)
                     }
-                    
+
                 } catch {
                     print("Ошибка декодирования SSE chunk: \(error)")
                 }

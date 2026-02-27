@@ -39,6 +39,8 @@ struct ChatDetailView: View {
 
                 clearChat
 
+                collapseTypeButton
+
                 Spacer()
 
                 Toggle("Ограничение ответа", isOn: $viewModel.isStrictMode)
@@ -88,9 +90,21 @@ struct ChatDetailView: View {
                         }
                     }
                     
+                    // Показываем индикатор суммаризации
+                    if viewModel.isSummarizing {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("Сжатие контекста...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal)
+                    }
+
                     // Показываем анимированные точки когда ждем ответа
                     // Или когда текст печатается и мы ждем следующего чанка
-                    if viewModel.isLoading {
+                    if viewModel.isLoading && !viewModel.isSummarizing {
                         LoadingDots()
                     }
                 }
@@ -113,7 +127,7 @@ struct ChatDetailView: View {
                         .foregroundColor(.white)
                         .cornerRadius(8)
                 }
-                .disabled(viewModel.isLoading || viewModel.isStreaming)
+                .disabled(viewModel.isLoading || viewModel.isStreaming || viewModel.isSummarizing)
             }
             .padding()
         }
@@ -162,6 +176,44 @@ struct ChatDetailView: View {
         .padding()
     }
     
+    private var collapseTypeButton: some View {
+        Button {
+            viewModel.isActiveCollapseDialog = true
+        } label: {
+            HStack {
+                Text(collapseTypeLabel(viewModel.collapseType))
+                    .font(.caption)
+                Image(systemName: "chevron.down")
+                    .font(.caption)
+                    .foregroundColor(.accentColor)
+            }
+        }
+        .padding(.horizontal, 8)
+        .confirmationDialog("Сжатие контекста", isPresented: $viewModel.isActiveCollapseDialog) {
+            ForEach(CollapseType.allCases, id: \.self) { type in
+                Button {
+                    viewModel.collapseType = type
+                } label: {
+                    HStack {
+                        Text(collapseTypeLabel(type))
+                        if type == viewModel.collapseType {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func collapseTypeLabel(_ type: CollapseType) -> String {
+        switch type {
+        case .none: return "Без сжатия"
+        case .cut:  return "Обрезка"
+        case .gpt:  return "AI-резюме"
+        }
+    }
+
     private var gigaChatModelButton: some View {
         Button {
             viewModel.isActiveModelDialog = true

@@ -11,6 +11,8 @@ final class MessageStorage {
     private let userDefaults = UserDefaults.standard
     private let messagesKey = "savedMessages"
     private let infoKey = "savedInfo"
+    private let summariesKey = "savedSummaries"
+    private let collapseTypeKey = "savedCollapseType"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -41,9 +43,10 @@ final class MessageStorage {
         }
     }
     
-    /// Очистить сохранённые сообщения из UserDefaults
+    /// Очистить сохранённые сообщения и резюме из UserDefaults
     func clearMessages() {
         userDefaults.removeObject(forKey: messagesKey)
+        clearSummaries()
     }
     
     // MARK: - Info (Statistics)
@@ -73,6 +76,49 @@ final class MessageStorage {
         }
     }
     
+    // MARK: - Summaries
+
+    func saveSummaries(_ summaries: [ConversationSummary]) {
+        do {
+            let data = try encoder.encode(summaries)
+            userDefaults.set(data, forKey: summariesKey)
+        } catch {
+            print("Ошибка сохранения резюме: \(error.localizedDescription)")
+        }
+    }
+
+    func loadSummaries() -> [ConversationSummary] {
+        guard let data = userDefaults.data(forKey: summariesKey) else { return [] }
+        do {
+            return try decoder.decode([ConversationSummary].self, from: data)
+        } catch {
+            print("Ошибка загрузки резюме: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func clearSummaries() {
+        userDefaults.removeObject(forKey: summariesKey)
+    }
+
+    // MARK: - CollapseType
+
+    func saveCollapseType(_ type: CollapseType) {
+        do {
+            let data = try encoder.encode(type)
+            userDefaults.set(data, forKey: collapseTypeKey)
+        } catch {
+            print("Ошибка сохранения типа сжатия: \(error.localizedDescription)")
+        }
+    }
+
+    func loadCollapseType() -> CollapseType {
+        guard let data = userDefaults.data(forKey: collapseTypeKey) else { return .none }
+        do {
+            return try decoder.decode(CollapseType.self, from: data)
+        } catch { return .none }
+    }
+
     /// Очистить статистику сессии из UserDefaults
     func clearSessionInfo(for api: GPTAPI) {
         var info = loadInfo()

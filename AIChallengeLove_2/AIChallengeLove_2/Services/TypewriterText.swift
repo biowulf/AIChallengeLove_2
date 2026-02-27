@@ -13,10 +13,17 @@ struct TypewriterText: View {
     let fullText: String
     let isComplete: Bool
     
+    private var formattedText: AttributedString {
+        (try? AttributedString(
+            markdown: fullText,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(fullText)
+    }
+
     var body: some View {
-        Text(fullText)
-            .textSelection(.enabled) // Позволяет выделять текст
-            .animation(.none, value: fullText) // Отключаем анимацию
+        Text(formattedText)
+            .textSelection(.enabled)
+            .animation(.none, value: fullText)
     }
 }
 
@@ -29,8 +36,15 @@ struct AnimatedTypewriterText: View {
     @State private var displayedText: String = ""
     @State private var animationTask: Task<Void, Never>?
     
+    private var formattedDisplayedText: AttributedString {
+        (try? AttributedString(
+            markdown: displayedText,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(displayedText)
+    }
+
     var body: some View {
-        Text(displayedText)
+        Text(formattedDisplayedText)
             .textSelection(.enabled)
             .onChange(of: fullText) { oldValue, newValue in
                 startAnimation(text: newValue)

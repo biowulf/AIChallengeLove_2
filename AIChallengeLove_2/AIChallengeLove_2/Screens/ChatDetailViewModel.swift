@@ -25,12 +25,24 @@ final class ChatDetailViewModel {
     var isStrictMode = false
     var maxTokensText: String = ""
     var temperature: Double = 0
-    
+
     // Streaming properties
     var isStreaming = false
     var streamingText = ""
     var isStreamingComplete = false
     var useStreaming = false // Переключатель для использования streaming
+
+    // Context management
+    var collapseType: CollapseType = .none {
+        didSet { messageStorage.saveCollapseType(collapseType) }
+    }
+    var summaries: [ConversationSummary] = []
+    var isSummarizing = false
+    @ObservationIgnored
+    var summarizedUpToIndex: Int = 0
+
+    private let contextWindowSize = 10
+    private let summarizationBlockSize = 10
 
     let network: NetworkService
     private let messageStorage = MessageStorage()
@@ -40,6 +52,12 @@ final class ChatDetailViewModel {
         // Загружаем сохранённые сообщения и статистику при инициализации
         self.messages = messageStorage.loadMessages()
         self.info = messageStorage.loadInfo()
+        self.summaries = messageStorage.loadSummaries()
+        self.collapseType = messageStorage.loadCollapseType()
+        self.summarizedUpToIndex = min(
+            summaries.reduce(0) { $0 + $1.originalMessageCount },
+            messages.count
+        )
     }
 
     // MARK: - Public
@@ -49,20 +67,33 @@ final class ChatDetailViewModel {
 
         let newMessage = Message(role: .user, content: inputText)
         messages.append(newMessage)
+        inputText = ""
 
+        // Проверяем, нужна ли суммаризация перед отправкой
+        if collapseType == .gpt {
+            let unsummarizedCount = messages.count - summarizedUpToIndex
+            if unsummarizedCount > contextWindowSize {
+                let block = getNextSummarizationBlock()
+                if !block.isEmpty {
+                    summarizeAndThenSend(block: block)
+                    return
+                }
+            }
+        }
+
+        // Суммаризация не нужна — отправляем напрямую
         let messagesToSend = prepareMessagesForAPI()
-
         sendMessages(messagesToSend) { [weak self] responseMessage in
             guard let self else { return }
             messages.append(responseMessage)
             messageStorage.saveMessages(messages)
         }
-
-        inputText = "" // очищаем поле ввода
     }
 
     func clearChat() {
         messages.removeAll()
+        summaries.removeAll()
+        summarizedUpToIndex = 0
         messageStorage.clearMessages()
     }
     
@@ -74,11 +105,48 @@ final class ChatDetailViewModel {
     // MARK: - Private
 
     private func prepareMessagesForAPI() -> [Message] {
-        var processedMessages = messages
+        var processedMessages: [Message]
+
+        switch collapseType {
+        case .none:
+            processedMessages = messages
+        case .cut:
+            // Обрезка: берём только последние N сообщений
+            var startIndex = max(0, messages.count - contextWindowSize)
+            // Гарантируем что первое отправляемое сообщение — user или system,
+            // т.к. GigaChat/Yandex отклоняют контекст, начинающийся с assistant
+            while startIndex < messages.count &&
+                  messages[startIndex].role != .user &&
+                  messages[startIndex].role != .system {
+                startIndex += 1
+            }
+            processedMessages = Array(messages[startIndex...])
+
+        case .gpt:
+            // AI-резюме: [системное сообщение с резюме] + [несуммаризированные сообщения]
+            var contextMessages: [Message] = []
+
+            if !summaries.isEmpty {
+                let combinedSummary = summaries
+                    .enumerated()
+                    .map { "Контекст беседы (часть \($0.offset + 1)): \($0.element.content)" }
+                    .joined(separator: "\n\n")
+
+                contextMessages.append(Message(
+                    role: .system,
+                    content: "Ниже приведено краткое содержание предыдущей части беседы. " +
+                             "Используй его как контекст для ответов.\n\n\(combinedSummary)"
+                ))
+            }
+
+            let safeIndex = min(summarizedUpToIndex, messages.count)
+            let recentMessages = Array(messages[safeIndex...])
+            contextMessages.append(contentsOf: recentMessages)
+
+            processedMessages = contextMessages
+        }
 
         if isStrictMode {
-            // 1. Добавляем явное описание формата (JSON или список)
-            // 2. Добавляем условие завершения (стоп-фраза "КОНЕЦ")
             let instruction = Message(role: .system, content: """
                 ОТВЕЧАЙ СТРОГО ПО ФОРМАТУ:
                 1. Краткий ответ (до 10 слов на весь ответ).
@@ -90,6 +158,96 @@ final class ChatDetailViewModel {
         }
 
         return processedMessages
+    }
+
+//     MARK: - Summarization
+
+    private func getNextSummarizationBlock() -> [Message] {
+        let unsummarizedMessages = Array(messages[summarizedUpToIndex...])
+        let eligibleCount = unsummarizedMessages.count - contextWindowSize
+        guard eligibleCount > 0 else { return [] }
+
+        let blockSize = min(eligibleCount, summarizationBlockSize)
+        let startIdx = summarizedUpToIndex
+        let endIdx = startIdx + blockSize
+        return Array(messages[startIdx..<endIdx])
+    }
+
+    private func summarizeAndThenSend(block: [Message]) {
+        isSummarizing = true
+        withAnimation { isLoading = true }
+
+        let summaryMessages = [
+            Message(role: .system, content: buildSummarizationPrompt())
+        ] + block
+
+        sendSummarizationRequest(summaryMessages) { [weak self] summaryText in
+            guard let self else { return }
+
+            if !summaryText.isEmpty {
+                let summary = ConversationSummary(
+                    content: summaryText,
+                    originalMessageCount: block.count,
+                    createdAt: Date()
+                )
+                summaries.append(summary)
+                summarizedUpToIndex += block.count
+                messageStorage.saveSummaries(summaries)
+                print("Суммаризация завершена: \(block.count) сообщений -> резюме")
+            } else {
+                print("Суммаризация не удалась, отправляем без сжатия")
+            }
+
+            isSummarizing = false
+
+            let messagesToSend = prepareMessagesForAPI()
+            sendMessages(messagesToSend) { [weak self] responseMessage in
+                guard let self else { return }
+                messages.append(responseMessage)
+                messageStorage.saveMessages(messages)
+            }
+        }
+    }
+
+    private func sendSummarizationRequest(_ messages: [Message], completion: @escaping (String) -> Void) {
+        switch gptAPI {
+        case .gigachat:
+            network.fetch(for: messages,
+                         model: gigaChatModel,
+                         maxTokens: 500,
+                         temperature: 0) { result in
+                switch result {
+                case .success(let payload):
+                    completion(payload.choices.first?.message.content ?? "")
+                case .failure(let error):
+                    print("Ошибка суммаризации: \(error.localizedDescription)")
+                    completion("")
+                }
+            }
+        case .yandex:
+            network.fetchYA(for: messages,
+                           maxTokens: 500,
+                           temperature: 0) { result in
+                switch result {
+                case .success(let payload):
+                    completion(payload.result.alternatives.first?.message.text ?? "")
+                case .failure(let error):
+                    print("Ошибка суммаризации YA: \(error.localizedDescription)")
+                    completion("")
+                }
+            }
+        }
+    }
+
+    private func buildSummarizationPrompt() -> String {
+        return """
+        Ты — помощник для сжатия контекста диалога. \
+        Твоя задача: кратко пересказать содержание переписки между пользователем и ассистентом. \
+        Сохрани ключевые факты, решения, имена, числа и важные детали. \
+        Опусти приветствия, повторы и несущественные фразы. \
+        Ответ дай одним абзацем, не более 150 слов. \
+        Пиши на том же языке, на котором велась беседа.
+        """
     }
 
     private func sendMessages(_ messages: [Message], completion: @escaping (Message) -> Void) {

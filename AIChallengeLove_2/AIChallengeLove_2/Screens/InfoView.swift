@@ -93,10 +93,32 @@ struct InfoView: View {
             Text("Моделью: \(viewModel.info.appSession[viewModel.gptAPI]?.output ?? 0)")
             Text("Всего токенов: \(viewModel.info.appSession[viewModel.gptAPI]?.total ?? 0)")
 
+            if !viewModel.summaries.isEmpty {
+                Divider()
+                    .padding(.vertical, 10)
+
+                Text("Контекст:")
+                    .font(.title)
+                    .padding(.bottom, 10)
+
+                Text("Резюме: \(viewModel.summaries.count)")
+                Text("Сообщений сжато: \(viewModel.summarizedUpToIndex)")
+                Text("Всего сообщений: \(viewModel.messages.count)")
+                Text("Режим: \(collapseTypeLabel(viewModel.collapseType))")
+            }
+
             Spacer()
         }
         .padding()
         .background(Color.mint.opacity(0.2))
         .frame(width: 270)
+    }
+
+    private func collapseTypeLabel(_ type: CollapseType) -> String {
+        switch type {
+        case .none: return "Без сжатия"
+        case .cut:  return "Обрезка"
+        case .gpt:  return "AI-резюме"
+        }
     }
 }
