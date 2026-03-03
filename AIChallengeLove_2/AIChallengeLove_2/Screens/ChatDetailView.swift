@@ -16,10 +16,13 @@ struct ChatDetailView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading) {
+        VStack(alignment: .leading, spacing: 0) {
             header
             HStack {
                 chatView
+                if viewModel.isShowBranches {
+                    BranchPanelView(viewModel: viewModel)
+                }
                 if viewModel.isShowInfo {
                     InfoView(viewModel: viewModel)
                 }
@@ -27,28 +30,48 @@ struct ChatDetailView: View {
         }
     }
 
+    // MARK: - Header
+
     private var header: some View {
         VStack {
             HStack {
                 gptTypeButton
-                
-                // Выбор модели GigaChat
+
                 if viewModel.gptAPI == .gigachat {
                     gigaChatModelButton
                 }
 
                 clearChat
 
-                collapseTypeButton
+                strategyButton
 
                 Spacer()
 
                 Toggle("Ограничение ответа", isOn: $viewModel.isStrictMode)
                     .tint(.orange)
-                
+
                 if viewModel.gptAPI == .gigachat {
                     Toggle("Streaming", isOn: $viewModel.useStreaming)
                         .tint(.green)
+                }
+
+                if viewModel.contextStrategy == .branching {
+                    // Индикатор активной линии
+                    if let lineId = viewModel.activeLineId,
+                       let line = viewModel.dialogLines.first(where: { $0.id == lineId }) {
+                        Text(line.topic)
+                            .font(.caption2)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.purple.opacity(0.2))
+                            .cornerRadius(4)
+                    }
+
+                    Button {
+                        viewModel.isShowBranches.toggle()
+                    } label: {
+                        Image(systemName: "arrow.triangle.branch")
+                    }
                 }
 
                 Button {
@@ -69,19 +92,20 @@ struct ChatDetailView: View {
         }
     }
 
+    // MARK: - Chat View
+
     private var chatView: some View {
         VStack {
-            // Список сообщений
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(viewModel.messages.indices, id: \.self) { index in
-                        MessageBubble(message: viewModel.messages[index])
+                    ForEach(viewModel.effectiveMessages()) { message in
+                        MessageBubble(message: message)
                     }
-                    
-                    // Показываем streaming сообщение с анимацией печатания
+
+                    // Streaming сообщение
                     if viewModel.isStreaming && !viewModel.streamingText.isEmpty {
                         HStack {
-                            TypewriterText(fullText: viewModel.streamingText, 
+                            TypewriterText(fullText: viewModel.streamingText,
                                          isComplete: viewModel.isStreamingComplete)
                                 .padding()
                                 .background(Color.blue.opacity(0.3))
@@ -89,8 +113,8 @@ struct ChatDetailView: View {
                             Spacer()
                         }
                     }
-                    
-                    // Показываем индикатор суммаризации
+
+                    // Индикатор суммаризации
                     if viewModel.isSummarizing {
                         HStack {
                             ProgressView()
@@ -102,10 +126,52 @@ struct ChatDetailView: View {
                         .padding(.horizontal)
                     }
 
-                    // Показываем анимированные точки когда ждем ответа
-                    // Или когда текст печатается и мы ждем следующего чанка
-                    if viewModel.isLoading && !viewModel.isSummarizing {
+                    // Индикатор извлечения фактов
+                    if viewModel.isExtractingFacts {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("Извлечение фактов...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal)
+                    }
+
+                    // Индикатор классификации линии диалога
+                    if viewModel.isClassifying {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("Определение темы...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal)
+                    }
+
+                    // Анимированные точки ожидания
+                    if viewModel.isLoading && !viewModel.isSummarizing && !viewModel.isExtractingFacts && !viewModel.isClassifying {
                         LoadingDots()
+                    }
+
+                    // Кнопка повтора при ошибке
+                    if viewModel.lastRequestFailed {
+                        HStack {
+                            Spacer()
+                            Button {
+                                viewModel.retryLastMessage()
+                            } label: {
+                                Label("Повторить запрос", systemImage: "arrow.clockwise")
+                                    .font(.caption)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(Color.red.opacity(0.15))
+                                    .foregroundColor(.red)
+                                    .cornerRadius(8)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
                 .padding()
@@ -114,7 +180,7 @@ struct ChatDetailView: View {
             // Поле ввода и кнопка отправки
             HStack {
                 TextField("Сообщение...", text: $viewModel.inputText, axis: .vertical)
-                    .lineLimit(1...5) // Минимум 1 строка, максимум 5, далее — скролл
+                    .lineLimit(1...5)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(Color.gray.opacity(0.2))
@@ -127,12 +193,13 @@ struct ChatDetailView: View {
                         .foregroundColor(.white)
                         .cornerRadius(8)
                 }
-                .disabled(viewModel.isLoading || viewModel.isStreaming || viewModel.isSummarizing)
+                .disabled(viewModel.isLoading || viewModel.isStreaming || viewModel.isSummarizing || viewModel.isExtractingFacts || viewModel.isClassifying)
             }
             .padding()
         }
     }
 
+    // MARK: - Buttons
 
     private var gptTypeButton: some View {
         Button {
@@ -175,44 +242,45 @@ struct ChatDetailView: View {
         }
         .padding()
     }
-    
-    private var collapseTypeButton: some View {
+
+    private var strategyButton: some View {
         Button {
-            viewModel.isActiveCollapseDialog = true
+            viewModel.isActiveStrategyDialog = true
         } label: {
-            HStack {
-                Text(collapseTypeLabel(viewModel.collapseType))
-                    .font(.caption)
-                Image(systemName: "chevron.down")
-                    .font(.caption)
-                    .foregroundColor(.accentColor)
+            HStack(spacing: 4) {
+                Text(viewModel.contextStrategy.label).font(.caption)
+                Image(systemName: "chevron.down").font(.caption2)
             }
+            .padding(.horizontal, 8)
         }
-        .padding(.horizontal, 8)
-        .confirmationDialog("Сжатие контекста", isPresented: $viewModel.isActiveCollapseDialog) {
-            ForEach(CollapseType.allCases, id: \.self) { type in
-                Button {
-                    viewModel.collapseType = type
-                } label: {
-                    HStack {
-                        Text(collapseTypeLabel(type))
-                        if type == viewModel.collapseType {
-                            Image(systemName: "checkmark")
-                                .foregroundColor(.accentColor)
+        .popover(isPresented: $viewModel.isActiveStrategyDialog, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(ContextStrategy.allCases, id: \.self) { strategy in
+                    Button {
+                        viewModel.contextStrategy = strategy
+                        viewModel.isActiveStrategyDialog = false
+                    } label: {
+                        HStack {
+                            Text(strategy.label)
+                            Spacer()
+                            if strategy == viewModel.contextStrategy {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.accentColor)
+                            }
                         }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain) // Убираем дефолтную обводку кнопки на Mac
+                    Divider().opacity(0.5)
                 }
             }
+            .padding(.vertical, 4)
+            .frame(width: 200) // На Mac нужно явно задать ширину
         }
     }
 
-    private func collapseTypeLabel(_ type: CollapseType) -> String {
-        switch type {
-        case .none: return "Без сжатия"
-        case .cut:  return "Обрезка"
-        case .gpt:  return "AI-резюме"
-        }
-    }
 
     private var gigaChatModelButton: some View {
         Button {

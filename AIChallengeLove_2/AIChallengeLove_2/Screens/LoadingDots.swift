@@ -8,33 +8,33 @@
 import SwiftUI
 
 struct LoadingDots: View {
-    @State private var dotsOpacity: [CGFloat] = Array(repeating: 1.0, count: 3)
-    @State private var isAnimating = false
+    @State private var scales: [CGFloat] = [1.0, 1.0, 1.0]
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach(0..<dotsOpacity.count, id: \.self) { index in
+            ForEach(0..<3, id: \.self) { index in
                 Circle()
                     .fill(Color.white)
                     .frame(width: 8, height: 8)
-                    .opacity(dotsOpacity[index])
-                    .scaleEffect(isAnimating ? 1.0 : 0.5)
-                    .animation(
-                        Animation.easeInOut(duration: 0.6)
-                            .repeatForever(autoreverses: true)
-                            .delay(Double(index) * 0.2),
-                        value: isAnimating
-                    )
+                    .scaleEffect(scales[index])
             }
         }
         .padding()
         .background(Color.blue.opacity(0.3))
         .cornerRadius(10)
         .onAppear {
-            isAnimating = true
+            for index in 0..<3 {
+                withAnimation(
+                    Animation.easeInOut(duration: 0.4)
+                        .repeatForever(autoreverses: true)
+                        .delay(Double(index) * 0.2)
+                ) {
+                    scales[index] = 1.4
+                }
+            }
         }
         .onDisappear {
-            isAnimating = false
+            scales = [1.0, 1.0, 1.0]
         }
     }
 }

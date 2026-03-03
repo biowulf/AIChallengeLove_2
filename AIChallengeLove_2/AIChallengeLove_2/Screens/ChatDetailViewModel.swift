@@ -20,8 +20,9 @@ final class ChatDetailViewModel {
     var gigaChatModel: GigaChatModel = .chat2
     var isActiveModelDialog = false
     var isShowInfo: Bool = true
+    var isShowBranches: Bool = false
     var info: Info = .init()
-    var isActiveCollapseDialog = false
+    var isActiveStrategyDialog = false
     var isStrictMode = false
     var maxTokensText: String = ""
     var temperature: Double = 0
@@ -30,30 +31,64 @@ final class ChatDetailViewModel {
     var isStreaming = false
     var streamingText = ""
     var isStreamingComplete = false
-    var useStreaming = false // Переключатель для использования streaming
+    var useStreaming = false
 
-    // Context management
-    var collapseType: CollapseType = .none {
-        didSet { messageStorage.saveCollapseType(collapseType) }
+    // Error state
+    var lastRequestFailed = false
+
+    // Context strategy
+    var contextStrategy: ContextStrategy = .none {
+        didSet { messageStorage.saveContextStrategy(contextStrategy) }
     }
+
+    // Sliding Window: настраиваемый размер окна
+    var contextWindowSize: Int = 10 {
+        didSet { messageStorage.saveWindowSize(contextWindowSize) }
+    }
+    var windowSizeText: String = "10"
+
+    // GPT Summary (бывший .gpt)
     var summaries: [ConversationSummary] = []
     var isSummarizing = false
     @ObservationIgnored
     var summarizedUpToIndex: Int = 0
-
-    private let contextWindowSize = 10
     private let summarizationBlockSize = 10
+
+    // Sticky Facts
+    var facts: [StickyFact] = []
+    var isExtractingFacts = false
+
+    // Branching (legacy)
+    var checkpoints: [Checkpoint] = []
+    var branches: [Branch] = []
+    var activeBranchId: UUID? = nil {
+        didSet { messageStorage.saveActiveBranchId(activeBranchId) }
+    }
+
+    // Dialog Lines (auto-branching)
+    var dialogLines: [DialogLine] = []
+    var activeLineId: UUID? = nil {
+        didSet { messageStorage.saveActiveLineId(activeLineId) }
+    }
+    var isClassifying = false
 
     let network: NetworkService
     private let messageStorage = MessageStorage()
 
     init(network: NetworkService) {
         self.network = network
-        // Загружаем сохранённые сообщения и статистику при инициализации
         self.messages = messageStorage.loadMessages()
         self.info = messageStorage.loadInfo()
         self.summaries = messageStorage.loadSummaries()
-        self.collapseType = messageStorage.loadCollapseType()
+        self.contextStrategy = messageStorage.loadContextStrategy()
+        self.contextWindowSize = messageStorage.loadWindowSize()
+        self.windowSizeText = "\(messageStorage.loadWindowSize())"
+        self.facts = messageStorage.loadFacts()
+        self.checkpoints = messageStorage.loadCheckpoints()
+        self.branches = messageStorage.loadBranches()
+        self.activeBranchId = messageStorage.loadActiveBranchId()
+        self.dialogLines = messageStorage.loadDialogLines()
+        self.activeLineId = messageStorage.loadActiveLineId()
         self.summarizedUpToIndex = min(
             summaries.reduce(0) { $0 + $1.originalMessageCount },
             messages.count
@@ -62,15 +97,49 @@ final class ChatDetailViewModel {
 
     // MARK: - Public
 
+    /// Возвращает сообщения для отображения в UI
+    func effectiveMessages() -> [Message] {
+        // Для авто-ветвления показываем все сообщения линейно
+        return messages
+    }
+
+    /// Возвращает сообщения активной линии диалога (для контекста AI)
+    func activeLineMessages() -> [Message] {
+        guard contextStrategy == .branching,
+              let lineId = activeLineId,
+              let line = dialogLines.first(where: { $0.id == lineId }) else {
+            return messages
+        }
+        return line.messages
+    }
+
     func sendMessage() {
         guard !inputText.isEmpty else { return }
 
         let newMessage = Message(role: .user, content: inputText)
-        messages.append(newMessage)
         inputText = ""
 
-        // Проверяем, нужна ли суммаризация перед отправкой
-        if collapseType == .gpt {
+        if contextStrategy == .branching {
+            // Для авто-ветвления: сначала добавляем в общий массив, затем классифицируем
+            messages.append(newMessage)
+            messageStorage.saveMessages(messages)
+            classifyAndSend(userMessage: newMessage)
+        } else {
+            appendMessage(newMessage)
+            performSend()
+        }
+    }
+
+    func retryLastMessage() {
+        lastRequestFailed = false
+        performSend()
+    }
+
+    private func performSend() {
+        lastRequestFailed = false
+
+        // Проверяем, нужна ли суммаризация перед отправкой (GPT Summary)
+        if contextStrategy == .gptSummary {
             let unsummarizedCount = messages.count - summarizedUpToIndex
             if unsummarizedCount > contextWindowSize {
                 let block = getNextSummarizationBlock()
@@ -81,12 +150,18 @@ final class ChatDetailViewModel {
             }
         }
 
-        // Суммаризация не нужна — отправляем напрямую
+        // Для Sticky Facts: извлекаем факты перед отправкой
+        if contextStrategy == .stickyFacts {
+            extractFactsAndThenSend()
+            return
+        }
+
+        // Все остальные стратегии — отправляем напрямую
         let messagesToSend = prepareMessagesForAPI()
         sendMessages(messagesToSend) { [weak self] responseMessage in
             guard let self else { return }
-            messages.append(responseMessage)
-            messageStorage.saveMessages(messages)
+            appendMessage(responseMessage)
+            persistCurrentMessages()
         }
     }
 
@@ -94,56 +169,319 @@ final class ChatDetailViewModel {
         messages.removeAll()
         summaries.removeAll()
         summarizedUpToIndex = 0
+        facts.removeAll()
+        checkpoints.removeAll()
+        branches.removeAll()
+        activeBranchId = nil
+        dialogLines.removeAll()
+        activeLineId = nil
         messageStorage.clearMessages()
     }
-    
+
     func clearSessionStats() {
         info.session[gptAPI] = SessionGPT(input: 0, output: 0, total: 0)
         messageStorage.saveInfo(info)
     }
 
-    // MARK: - Private
+    func clearFacts() {
+        facts.removeAll()
+        messageStorage.saveFacts(facts)
+    }
+
+    // MARK: - Branching
+
+    func createCheckpoint(name: String? = nil) {
+        let checkpointName = name ?? "Чекпоинт \(checkpoints.count + 1)"
+
+        // Если мы в ветке, «коммитим» её сообщения в основной массив
+        if let branchId = activeBranchId,
+           let branch = branches.first(where: { $0.id == branchId }),
+           let checkpoint = checkpoints.first(where: { $0.id == branch.checkpointId }) {
+            let baseMessages = Array(messages.prefix(checkpoint.messageCount))
+            messages = baseMessages + branch.messages
+            messageStorage.saveMessages(messages)
+            activeBranchId = nil
+        }
+
+        let cp = Checkpoint(name: checkpointName, messageCount: messages.count)
+        checkpoints.append(cp)
+        messageStorage.saveCheckpoints(checkpoints)
+    }
+
+    func createBranch(from checkpointId: UUID, name: String? = nil) {
+        let branchName = name ?? "Ветка \(branches.filter { $0.checkpointId == checkpointId }.count + 1)"
+        let branch = Branch(checkpointId: checkpointId, name: branchName)
+        branches.append(branch)
+        activeBranchId = branch.id
+        messageStorage.saveBranches(branches)
+    }
+
+    func switchToBranch(_ branchId: UUID) {
+        activeBranchId = branchId
+    }
+
+    func switchToMainTimeline() {
+        activeBranchId = nil
+    }
+
+    func branchesByCheckpoint() -> [(checkpoint: Checkpoint, branches: [Branch])] {
+        checkpoints.map { cp in
+            (checkpoint: cp, branches: branches.filter { $0.checkpointId == cp.id })
+        }
+    }
+
+    // MARK: - Dialog Lines (Auto-branching)
+
+    func switchToLine(_ lineId: UUID) {
+        activeLineId = lineId
+    }
+
+    /// Определяет линию для сообщения и отправляет
+    private func classifyAndSend(userMessage: Message) {
+        // Если линий ещё нет — создаём первую без классификации
+        if dialogLines.isEmpty {
+            createFirstLineAndSend(userMessage: userMessage)
+            return
+        }
+
+        isClassifying = true
+        withAnimation { isLoading = true }
+
+        let classificationMessages = [
+            Message(role: .system, content: buildClassificationPrompt()),
+            Message(role: .user, content: userMessage.content)
+        ]
+
+        sendAuxiliaryRequest(classificationMessages) { [weak self] responseText in
+            guard let self else { return }
+            isClassifying = false
+
+            let classification = parseClassification(responseText)
+
+            switch classification {
+            case .existingLine(let lineId):
+                activeLineId = lineId
+                appendToActiveLine(userMessage)
+            case .newLine(let topic):
+                let newLine = DialogLine(topic: topic, messages: [userMessage])
+                dialogLines.append(newLine)
+                activeLineId = newLine.id
+                messageStorage.saveDialogLines(dialogLines)
+            }
+
+            // Теперь отправляем основной запрос с контекстом линии
+            let messagesToSend = prepareMessagesForAPI()
+            sendMessages(messagesToSend) { [weak self] responseMessage in
+                guard let self else { return }
+                // Добавляем ответ в общий массив и в активную линию
+                appendMessage(responseMessage)
+                appendToActiveLine(responseMessage)
+            }
+        }
+    }
+
+    private func createFirstLineAndSend(userMessage: Message) {
+        withAnimation { isLoading = true }
+
+        // Определяем тему по первому сообщению
+        let topicMessages = [
+            Message(role: .system, content: """
+                Определи краткую тему (2-5 слов) для следующего сообщения пользователя. \
+                Ответь ТОЛЬКО названием темы, без кавычек и пояснений.
+                """),
+            Message(role: .user, content: userMessage.content)
+        ]
+
+        sendAuxiliaryRequest(topicMessages) { [weak self] topicText in
+            guard let self else { return }
+
+            let topic = topicText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let line = DialogLine(
+                topic: topic.isEmpty ? "Тема 1" : topic,
+                messages: [userMessage]
+            )
+            dialogLines.append(line)
+            activeLineId = line.id
+            messageStorage.saveDialogLines(dialogLines)
+
+            let messagesToSend = prepareMessagesForAPI()
+            sendMessages(messagesToSend) { [weak self] responseMessage in
+                guard let self else { return }
+                appendMessage(responseMessage)
+                appendToActiveLine(responseMessage)
+            }
+        }
+    }
+
+    private func buildClassificationPrompt() -> String {
+        let linesDescription = dialogLines
+            .enumerated()
+            .map { "- id: \"\($1.id.uuidString)\", тема: \"\($1.topic)\" (\($1.messages.count) сообщ.)" }
+            .joined(separator: "\n")
+
+        return """
+            Ты — классификатор тем диалога. Определи, к какой линии диалога относится \
+            новое сообщение пользователя.
+
+            Текущие линии диалога:
+            \(linesDescription)
+
+            Правила:
+            1. Если сообщение продолжает или возвращается к существующей теме — верни её id.
+            2. Если это новая тема — придумай краткое название (2-5 слов).
+            3. Если пользователь просто делает пометку о будущей теме, но не переходит к ней — \
+               верни id текущей активной линии.
+
+            Активная линия сейчас: \(activeLineId?.uuidString ?? "нет")
+
+            Ответь строго в формате JSON (без markdown):
+            Для существующей темы: {"lineId": "uuid-строка"}
+            Для новой темы: {"newTopic": "название темы"}
+            """
+    }
+
+    private enum ClassificationResult {
+        case existingLine(UUID)
+        case newLine(String)
+    }
+
+    private func parseClassification(_ json: String) -> ClassificationResult {
+        var cleaned = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.hasPrefix("```") {
+            cleaned = cleaned
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        guard let data = cleaned.data(using: .utf8) else {
+            return .newLine("Новая тема")
+        }
+
+        struct LineIdResponse: Decodable { let lineId: String? }
+        struct NewTopicResponse: Decodable { let newTopic: String? }
+
+        if let response = try? JSONDecoder().decode(LineIdResponse.self, from: data),
+           let lineIdStr = response.lineId,
+           let lineId = UUID(uuidString: lineIdStr),
+           dialogLines.contains(where: { $0.id == lineId }) {
+            return .existingLine(lineId)
+        }
+
+        if let response = try? JSONDecoder().decode(NewTopicResponse.self, from: data),
+           let topic = response.newTopic, !topic.isEmpty {
+            return .newLine(topic)
+        }
+
+        // Fallback: если не удалось распарсить, остаёмся на текущей линии
+        if let currentId = activeLineId {
+            return .existingLine(currentId)
+        }
+        return .newLine("Новая тема")
+    }
+
+    // MARK: - Private: Message routing
+
+    private func appendMessage(_ message: Message) {
+        messages.append(message)
+        messageStorage.saveMessages(messages)
+    }
+
+    /// Добавляет сообщение в активную линию диалога
+    private func appendToActiveLine(_ message: Message) {
+        guard let lineId = activeLineId,
+              let index = dialogLines.firstIndex(where: { $0.id == lineId }) else { return }
+        dialogLines[index].messages.append(message)
+        messageStorage.saveDialogLines(dialogLines)
+    }
+
+    private func persistCurrentMessages() {
+        messageStorage.saveMessages(messages)
+        if contextStrategy == .branching {
+            messageStorage.saveDialogLines(dialogLines)
+        }
+    }
+
+    // MARK: - Prepare messages for API
 
     private func prepareMessagesForAPI() -> [Message] {
         var processedMessages: [Message]
+        let allMessages = effectiveMessages()
 
-        switch collapseType {
+        switch contextStrategy {
         case .none:
-            processedMessages = messages
-        case .cut:
-            // Обрезка: берём только последние N сообщений
-            var startIndex = max(0, messages.count - contextWindowSize)
-            // Гарантируем что первое отправляемое сообщение — user или system,
-            // т.к. GigaChat/Yandex отклоняют контекст, начинающийся с assistant
-            while startIndex < messages.count &&
-                  messages[startIndex].role != .user &&
-                  messages[startIndex].role != .system {
+            processedMessages = allMessages
+
+        case .slidingWindow:
+            var startIndex = max(0, allMessages.count - contextWindowSize)
+            while startIndex < allMessages.count &&
+                  allMessages[startIndex].role != .user &&
+                  allMessages[startIndex].role != .system {
                 startIndex += 1
             }
-            processedMessages = Array(messages[startIndex...])
+            if startIndex < allMessages.count {
+                processedMessages = Array(allMessages[startIndex...])
+            } else {
+                processedMessages = allMessages
+            }
 
-        case .gpt:
-            // AI-резюме: [системное сообщение с резюме] + [несуммаризированные сообщения]
+        case .gptSummary:
             var contextMessages: [Message] = []
-
             if !summaries.isEmpty {
                 let combinedSummary = summaries
                     .enumerated()
                     .map { "Контекст беседы (часть \($0.offset + 1)): \($0.element.content)" }
                     .joined(separator: "\n\n")
-
                 contextMessages.append(Message(
                     role: .system,
                     content: "Ниже приведено краткое содержание предыдущей части беседы. " +
                              "Используй его как контекст для ответов.\n\n\(combinedSummary)"
                 ))
             }
-
             let safeIndex = min(summarizedUpToIndex, messages.count)
             let recentMessages = Array(messages[safeIndex...])
             contextMessages.append(contentsOf: recentMessages)
-
             processedMessages = contextMessages
+
+        case .stickyFacts:
+            var contextMessages: [Message] = []
+            if !facts.isEmpty {
+                let factsText = facts
+                    .map { "- \($0.key): \($0.value)" }
+                    .joined(separator: "\n")
+                contextMessages.append(Message(
+                    role: .system,
+                    content: "Ключевые факты из диалога (используй как контекст):\n\(factsText)"
+                ))
+            }
+            var startIndex = max(0, allMessages.count - contextWindowSize)
+            while startIndex < allMessages.count &&
+                  allMessages[startIndex].role != .user &&
+                  allMessages[startIndex].role != .system {
+                startIndex += 1
+            }
+            if startIndex < allMessages.count {
+                contextMessages.append(contentsOf: Array(allMessages[startIndex...]))
+            } else {
+                contextMessages.append(contentsOf: allMessages)
+            }
+            processedMessages = contextMessages
+
+        case .branching:
+            // Для авто-ветвления: используем сообщения активной линии
+            let lineMessages = activeLineMessages()
+            if let lineId = activeLineId,
+               let line = dialogLines.first(where: { $0.id == lineId }) {
+                var contextMessages: [Message] = []
+                contextMessages.append(Message(
+                    role: .system,
+                    content: "Текущая тема обсуждения: \(line.topic). Отвечай в контексте этой темы."
+                ))
+                contextMessages.append(contentsOf: lineMessages)
+                processedMessages = contextMessages
+            } else {
+                processedMessages = allMessages
+            }
         }
 
         if isStrictMode {
@@ -160,7 +498,7 @@ final class ChatDetailViewModel {
         return processedMessages
     }
 
-//     MARK: - Summarization
+    // MARK: - GPT Summarization
 
     private func getNextSummarizationBlock() -> [Message] {
         let unsummarizedMessages = Array(messages[summarizedUpToIndex...])
@@ -181,7 +519,7 @@ final class ChatDetailViewModel {
             Message(role: .system, content: buildSummarizationPrompt())
         ] + block
 
-        sendSummarizationRequest(summaryMessages) { [weak self] summaryText in
+        sendAuxiliaryRequest(summaryMessages) { [weak self] summaryText in
             guard let self else { return }
 
             if !summaryText.isEmpty {
@@ -193,9 +531,6 @@ final class ChatDetailViewModel {
                 summaries.append(summary)
                 summarizedUpToIndex += block.count
                 messageStorage.saveSummaries(summaries)
-                print("Суммаризация завершена: \(block.count) сообщений -> резюме")
-            } else {
-                print("Суммаризация не удалась, отправляем без сжатия")
             }
 
             isSummarizing = false
@@ -203,38 +538,8 @@ final class ChatDetailViewModel {
             let messagesToSend = prepareMessagesForAPI()
             sendMessages(messagesToSend) { [weak self] responseMessage in
                 guard let self else { return }
-                messages.append(responseMessage)
-                messageStorage.saveMessages(messages)
-            }
-        }
-    }
-
-    private func sendSummarizationRequest(_ messages: [Message], completion: @escaping (String) -> Void) {
-        switch gptAPI {
-        case .gigachat:
-            network.fetch(for: messages,
-                         model: gigaChatModel,
-                         maxTokens: 500,
-                         temperature: 0) { result in
-                switch result {
-                case .success(let payload):
-                    completion(payload.choices.first?.message.content ?? "")
-                case .failure(let error):
-                    print("Ошибка суммаризации: \(error.localizedDescription)")
-                    completion("")
-                }
-            }
-        case .yandex:
-            network.fetchYA(for: messages,
-                           maxTokens: 500,
-                           temperature: 0) { result in
-                switch result {
-                case .success(let payload):
-                    completion(payload.result.alternatives.first?.message.text ?? "")
-                case .failure(let error):
-                    print("Ошибка суммаризации YA: \(error.localizedDescription)")
-                    completion("")
-                }
+                appendMessage(responseMessage)
+                persistCurrentMessages()
             }
         }
     }
@@ -250,6 +555,107 @@ final class ChatDetailViewModel {
         """
     }
 
+    // MARK: - Sticky Facts
+
+    private func extractFactsAndThenSend() {
+        isExtractingFacts = true
+        withAnimation { isLoading = true }
+
+        let recentMessages = Array(effectiveMessages().suffix(4))
+        let extractionMessages = [
+            Message(role: .system, content: buildFactExtractionPrompt())
+        ] + recentMessages
+
+        sendAuxiliaryRequest(extractionMessages) { [weak self] extractedJSON in
+            guard let self else { return }
+            isExtractingFacts = false
+
+            if let newFacts = parseExtractedFacts(extractedJSON) {
+                mergeFacts(newFacts)
+                messageStorage.saveFacts(facts)
+            }
+
+            let messagesToSend = prepareMessagesForAPI()
+            sendMessages(messagesToSend) { [weak self] responseMessage in
+                guard let self else { return }
+                appendMessage(responseMessage)
+                persistCurrentMessages()
+            }
+        }
+    }
+
+    private func buildFactExtractionPrompt() -> String {
+        return """
+        Ты — помощник для извлечения ключевых фактов из диалога. \
+        Проанализируй последние сообщения и извлеки важные факты: цели, ограничения, \
+        предпочтения, решения, договорённости, имена, даты, числа. \
+        Ответ дай строго в формате JSON массива: \
+        [{"key": "название факта", "value": "значение"}] \
+        Если новых фактов нет, верни пустой массив []. \
+        Если факт обновляет старый — используй тот же ключ с новым значением. \
+        Пиши на том же языке, на котором велась беседа. \
+        Максимум 10 фактов.
+        """
+    }
+
+    private func parseExtractedFacts(_ json: String) -> [StickyFact]? {
+        var cleaned = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.hasPrefix("```") {
+            cleaned = cleaned
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let data = cleaned.data(using: .utf8) else { return nil }
+        struct RawFact: Decodable { let key: String; let value: String }
+        guard let raw = try? JSONDecoder().decode([RawFact].self, from: data) else { return nil }
+        return raw.map { StickyFact(key: $0.key, value: $0.value) }
+    }
+
+    private func mergeFacts(_ newFacts: [StickyFact]) {
+        for newFact in newFacts {
+            if let existingIndex = facts.firstIndex(where: { $0.key.lowercased() == newFact.key.lowercased() }) {
+                facts[existingIndex] = newFact
+            } else {
+                facts.append(newFact)
+            }
+        }
+    }
+
+    // MARK: - Auxiliary LLM request (summarization / fact extraction)
+
+    private func sendAuxiliaryRequest(_ messages: [Message], completion: @escaping (String) -> Void) {
+        switch gptAPI {
+        case .gigachat:
+            network.fetch(for: messages,
+                         model: gigaChatModel,
+                         maxTokens: 500,
+                         temperature: 0) { result in
+                switch result {
+                case .success(let payload):
+                    completion(payload.choices.first?.message.content ?? "")
+                case .failure(let error):
+                    print("Ошибка вспомогательного запроса: \(error.localizedDescription)")
+                    completion("")
+                }
+            }
+        case .yandex:
+            network.fetchYA(for: messages,
+                           maxTokens: 500,
+                           temperature: 0) { result in
+                switch result {
+                case .success(let payload):
+                    completion(payload.result.alternatives.first?.message.text ?? "")
+                case .failure(let error):
+                    print("Ошибка вспомогательного запроса YA: \(error.localizedDescription)")
+                    completion("")
+                }
+            }
+        }
+    }
+
+    // MARK: - Send messages
+
     private func sendMessages(_ messages: [Message], completion: @escaping (Message) -> Void) {
         withAnimation {
             isLoading = true
@@ -260,16 +666,15 @@ final class ChatDetailViewModel {
 
         switch gptAPI {
         case .gigachat:
-            // Используем streaming если включен флаг
             if useStreaming {
-                sendStreamingRequest(messages: messages, 
-                                   maxTokens: maxTokens, 
-                                   temperature: temperature, 
+                sendStreamingRequest(messages: messages,
+                                   maxTokens: maxTokens,
+                                   temperature: temperature,
                                    completion: completion)
             } else {
-                sendNonStreamingRequest(messages: messages, 
-                                      maxTokens: maxTokens, 
-                                      temperature: temperature, 
+                sendNonStreamingRequest(messages: messages,
+                                      maxTokens: maxTokens,
+                                      temperature: temperature,
                                       completion: completion)
             }
         case .yandex:
@@ -303,50 +708,45 @@ final class ChatDetailViewModel {
 
                     messageStorage.saveInfo(info)
                 case .failure(let error):
+                    self.lastRequestFailed = true
                     print("Ошибка запроса: ", error.localizedDescription)
                 }
             }
         }
     }
-    
-    private func sendStreamingRequest(messages: [Message], 
-                                     maxTokens: Int?, 
-                                     temperature: Float, 
+
+    private func sendStreamingRequest(messages: [Message],
+                                     maxTokens: Int?,
+                                     temperature: Float,
                                      completion: @escaping (Message) -> Void) {
-        // Сбрасываем состояние стрима
         streamingText = ""
         isStreamingComplete = false
         isStreaming = true
-        
+
         network.fetchStream(
             for: messages,
             model: gigaChatModel,
             maxTokens: maxTokens,
             temperature: temperature
         ) { [weak self] chunk in
-            // Получаем кусочек текста
             DispatchQueue.main.async {
                 self?.streamingText += chunk
             }
         } onComplete: { [weak self] usage in
-            // Стрим завершен
             guard let self else { return }
-            
+
             DispatchQueue.main.async {
                 self.isStreaming = false
                 self.isStreamingComplete = true
                 self.isLoading = false
-                
-                // Создаем финальное сообщение
+
                 let finalMessage = Message(role: .assistant, content: self.streamingText)
                 completion(finalMessage)
-                
-                // Обновляем статистику если есть usage
+
                 if let usage = usage {
                     self.updateUsageStats(usage: usage)
                 }
-                
-                // Сбрасываем streaming text для следующего запроса
+
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     self.streamingText = ""
                     self.isStreamingComplete = false
@@ -357,18 +757,19 @@ final class ChatDetailViewModel {
                 self?.isStreaming = false
                 self?.isLoading = false
                 self?.streamingText = ""
+                self?.lastRequestFailed = true
                 print("Ошибка streaming запроса: ", error.localizedDescription)
             }
         }
     }
-    
-    private func sendNonStreamingRequest(messages: [Message], 
-                                        maxTokens: Int?, 
-                                        temperature: Float, 
+
+    private func sendNonStreamingRequest(messages: [Message],
+                                        maxTokens: Int?,
+                                        temperature: Float,
                                         completion: @escaping (Message) -> Void) {
-        network.fetch(for: messages, 
+        network.fetch(for: messages,
                      model: gigaChatModel,
-                     maxTokens: maxTokens, 
+                     maxTokens: maxTokens,
                      temperature: temperature) { [weak self] result in
             guard let self else { return }
             isLoading = false
@@ -379,11 +780,12 @@ final class ChatDetailViewModel {
                 }
                 updateUsageStats(usage: payload.usage)
             case .failure(let error):
+                lastRequestFailed = true
                 print("Ошибка запроса: ", error.localizedDescription)
             }
         }
     }
-    
+
     private func updateUsageStats(usage: Usage) {
         var requestInfo = info.request[gptAPI] ?? .init(input: 0, output: 0, total: 0)
         requestInfo.input = usage.promptTokens
