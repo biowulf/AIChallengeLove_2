@@ -20,6 +20,8 @@ final class MessageStorage {
     private let activeBranchIdKey = "savedActiveBranchId"
     private let dialogLinesKey = "savedDialogLines"
     private let activeLineIdKey = "savedActiveLineId"
+    private let workingMemoryKey = "savedWorkingMemory"
+    private let longTermMemoryKey = "savedLongTermMemory"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -52,6 +54,8 @@ final class MessageStorage {
         clearFacts()
         clearBranches()
         clearDialogLines()
+        clearWorkingMemory()
+        // НЕ очищаем долговременную память — она живёт между диалогами
     }
 
     // MARK: - Info (Statistics)
@@ -256,6 +260,60 @@ final class MessageStorage {
     func clearDialogLines() {
         userDefaults.removeObject(forKey: dialogLinesKey)
         userDefaults.removeObject(forKey: activeLineIdKey)
+    }
+
+    // MARK: - Working Memory
+
+    func saveWorkingMemory(_ memory: WorkingMemory) {
+        do {
+            let data = try encoder.encode(memory)
+            userDefaults.set(data, forKey: workingMemoryKey)
+        } catch {
+            print("Ошибка сохранения рабочей памяти: \(error.localizedDescription)")
+        }
+    }
+
+    func loadWorkingMemory() -> WorkingMemory {
+        guard let data = userDefaults.data(forKey: workingMemoryKey) else {
+            return WorkingMemory()
+        }
+        do {
+            return try decoder.decode(WorkingMemory.self, from: data)
+        } catch {
+            print("Ошибка загрузки рабочей памяти: \(error.localizedDescription)")
+            return WorkingMemory()
+        }
+    }
+
+    func clearWorkingMemory() {
+        userDefaults.removeObject(forKey: workingMemoryKey)
+    }
+
+    // MARK: - Long-term Memory
+
+    func saveLongTermMemory(_ memory: LongTermMemory) {
+        do {
+            let data = try encoder.encode(memory)
+            userDefaults.set(data, forKey: longTermMemoryKey)
+        } catch {
+            print("Ошибка сохранения долговременной памяти: \(error.localizedDescription)")
+        }
+    }
+
+    func loadLongTermMemory() -> LongTermMemory {
+        guard let data = userDefaults.data(forKey: longTermMemoryKey) else {
+            return LongTermMemory()
+        }
+        do {
+            return try decoder.decode(LongTermMemory.self, from: data)
+        } catch {
+            print("Ошибка загрузки долговременной памяти: \(error.localizedDescription)")
+            return LongTermMemory()
+        }
+    }
+
+    func clearLongTermMemory() {
+        userDefaults.removeObject(forKey: longTermMemoryKey)
     }
 
     // MARK: - Session

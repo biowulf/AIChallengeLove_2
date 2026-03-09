@@ -23,6 +23,9 @@ struct ChatDetailView: View {
                 if viewModel.isShowBranches {
                     BranchPanelView(viewModel: viewModel)
                 }
+                if viewModel.isShowMemoryPanel {
+                    MemoryPanelView(viewModel: viewModel)
+                }
                 if viewModel.isShowInfo {
                     InfoView(viewModel: viewModel)
                 }
@@ -71,6 +74,14 @@ struct ChatDetailView: View {
                         viewModel.isShowBranches.toggle()
                     } label: {
                         Image(systemName: "arrow.triangle.branch")
+                    }
+                }
+
+                if viewModel.contextStrategy == .memoryLayers {
+                    Button {
+                        viewModel.isShowMemoryPanel.toggle()
+                    } label: {
+                        Image(systemName: "brain")
                     }
                 }
 
@@ -150,8 +161,31 @@ struct ChatDetailView: View {
                         .padding(.horizontal)
                     }
 
+                    // Индикаторы извлечения памяти (Memory Layers)
+                    if viewModel.isExtractingWorkingMemory {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("Анализ контекста задачи...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal)
+                    }
+
+                    if viewModel.isExtractingLongTermMemory {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("Обновление долговременной памяти...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal)
+                    }
+
                     // Анимированные точки ожидания
-                    if viewModel.isLoading && !viewModel.isSummarizing && !viewModel.isExtractingFacts && !viewModel.isClassifying {
+                    if viewModel.isLoading && !viewModel.isSummarizing && !viewModel.isExtractingFacts && !viewModel.isClassifying && !viewModel.isExtractingWorkingMemory && !viewModel.isExtractingLongTermMemory {
                         LoadingDots()
                     }
 
@@ -193,7 +227,7 @@ struct ChatDetailView: View {
                         .foregroundColor(.white)
                         .cornerRadius(8)
                 }
-                .disabled(viewModel.isLoading || viewModel.isStreaming || viewModel.isSummarizing || viewModel.isExtractingFacts || viewModel.isClassifying)
+                .disabled(viewModel.isLoading || viewModel.isStreaming || viewModel.isSummarizing || viewModel.isExtractingFacts || viewModel.isClassifying || viewModel.isExtractingWorkingMemory || viewModel.isExtractingLongTermMemory)
             }
             .padding()
         }

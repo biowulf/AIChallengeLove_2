@@ -53,8 +53,8 @@ struct InfoView: View {
                     .font(.headline)
                     .padding(.bottom, 10)
 
-                // Настройка размера окна (для slidingWindow и stickyFacts)
-                if viewModel.contextStrategy == .slidingWindow || viewModel.contextStrategy == .stickyFacts {
+                // Настройка размера окна (для slidingWindow, stickyFacts и memoryLayers)
+                if viewModel.contextStrategy == .slidingWindow || viewModel.contextStrategy == .stickyFacts || viewModel.contextStrategy == .memoryLayers {
                     windowSizeSection
                 }
 
@@ -71,6 +71,11 @@ struct InfoView: View {
                 // Информация о ветках (для branching)
                 if viewModel.contextStrategy == .branching {
                     branchInfoSection
+                }
+
+                // Сводка по слоям памяти (для memoryLayers)
+                if viewModel.contextStrategy == .memoryLayers {
+                    memoryLayersInfoSection
                 }
 
                 Text("Всего сообщений: \(viewModel.effectiveMessages().count)")
@@ -198,6 +203,40 @@ struct InfoView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Резюме: \(viewModel.summaries.count)")
             Text("Сообщений сжато: \(viewModel.summarizedUpToIndex)")
+        }
+        .padding(.bottom, 10)
+    }
+
+    // MARK: - Memory Layers Info
+
+    private var memoryLayersInfoSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Слои памяти:")
+                .font(.headline)
+
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
+                    .font(.caption)
+                    .foregroundColor(.blue)
+                Text("Краткосрочная: \(viewModel.effectiveMessages().count) сообщ.")
+                    .font(.caption)
+            }
+
+            HStack(spacing: 4) {
+                Image(systemName: "gearshape.2")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                Text("Рабочая: \(viewModel.memoryManager?.workingMemory.isEmpty == false ? "активна" : "пуста")")
+                    .font(.caption)
+            }
+
+            HStack(spacing: 4) {
+                Image(systemName: "brain")
+                    .font(.caption)
+                    .foregroundColor(.purple)
+                Text("Долговременная: \(viewModel.memoryManager?.longTermMemory.entries.count ?? 0) записей")
+                    .font(.caption)
+            }
         }
         .padding(.bottom, 10)
     }

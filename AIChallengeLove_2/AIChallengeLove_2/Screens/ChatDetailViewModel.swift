@@ -43,7 +43,10 @@ final class ChatDetailViewModel {
 
     // Sliding Window: настраиваемый размер окна
     var contextWindowSize: Int = 10 {
-        didSet { messageStorage.saveWindowSize(contextWindowSize) }
+        didSet {
+            messageStorage.saveWindowSize(contextWindowSize)
+            memoryManager?.updateWindowSize(contextWindowSize)
+        }
     }
     var windowSizeText: String = "10"
 
@@ -72,6 +75,12 @@ final class ChatDetailViewModel {
     }
     var isClassifying = false
 
+    // Memory Layers
+    var memoryManager: MemoryManager?
+    var isExtractingWorkingMemory = false
+    var isExtractingLongTermMemory = false
+    var isShowMemoryPanel = false
+
     let network: NetworkService
     private let messageStorage = MessageStorage()
 
@@ -92,6 +101,12 @@ final class ChatDetailViewModel {
         self.summarizedUpToIndex = min(
             summaries.reduce(0) { $0 + $1.originalMessageCount },
             messages.count
+        )
+
+        // Инициализация MemoryManager (всегда, чтобы долговременная память накапливалась)
+        self.memoryManager = MemoryManager(
+            storage: messageStorage,
+            windowSize: self.contextWindowSize
         )
     }
 
@@ -156,6 +171,12 @@ final class ChatDetailViewModel {
             return
         }
 
+        // Memory Layers: извлекаем рабочую и (периодически) долговременную память
+        if contextStrategy == .memoryLayers {
+            extractMemoriesAndThenSend()
+            return
+        }
+
         // Все остальные стратегии — отправляем напрямую
         let messagesToSend = prepareMessagesForAPI()
         sendMessages(messagesToSend) { [weak self] responseMessage in
@@ -175,7 +196,12 @@ final class ChatDetailViewModel {
         activeBranchId = nil
         dialogLines.removeAll()
         activeLineId = nil
+        memoryManager?.clearConversationMemory() // Очищаем рабочую, долговременная остаётся
         messageStorage.clearMessages()
+    }
+
+    func clearLongTermMemory() {
+        memoryManager?.clearLongTermMemory()
     }
 
     func clearSessionStats() {
@@ -482,17 +508,36 @@ final class ChatDetailViewModel {
             } else {
                 processedMessages = allMessages
             }
+
+        case .memoryLayers:
+            // Слои памяти: MemoryManager собирает контекст из 3 слоёв
+            if let mm = memoryManager {
+                processedMessages = mm.composeMessagesForAPI(allMessages: allMessages)
+            } else {
+                // Fallback: sliding window
+                processedMessages = Array(allMessages.suffix(contextWindowSize))
+            }
         }
 
         if isStrictMode {
-            let instruction = Message(role: .system, content: """
+            let strictText = """
                 ОТВЕЧАЙ СТРОГО ПО ФОРМАТУ:
                 1. Краткий ответ (до 10 слов на весь ответ).
                 2. В конце обязательно пиши слово 'КОНЕЦ' если ты уложился в ограничение ответа.
                 3. после слова СТОП ты должен перестать отвечать если не закончил.
                 Используй только маркированные списки.
-                """)
-            processedMessages.insert(instruction, at: 0)
+                """
+
+            if let firstIndex = processedMessages.firstIndex(where: { $0.role == .system }) {
+                // Объединяем с существующим system message
+                let existing = processedMessages[firstIndex]
+                processedMessages[firstIndex] = Message(
+                    role: .system,
+                    content: existing.content + "\n\n---\n\n" + strictText
+                )
+            } else {
+                processedMessages.insert(Message(role: .system, content: strictText), at: 0)
+            }
         }
 
         return processedMessages
@@ -619,6 +664,79 @@ final class ChatDetailViewModel {
             } else {
                 facts.append(newFact)
             }
+        }
+    }
+
+    // MARK: - Memory Layers Extraction
+
+    private func extractMemoriesAndThenSend() {
+        guard let mm = memoryManager else {
+            // Fallback: отправляем без извлечения
+            let messagesToSend = prepareMessagesForAPI()
+            sendMessages(messagesToSend) { [weak self] responseMessage in
+                guard let self else { return }
+                appendMessage(responseMessage)
+                persistCurrentMessages()
+            }
+            return
+        }
+
+        isExtractingWorkingMemory = true
+        withAnimation { isLoading = true }
+
+        // Шаг 1: Извлекаем рабочую память из последних 6 сообщений
+        let recentForExtraction = Array(effectiveMessages().suffix(6))
+        let workingMemoryMessages = [
+            Message(role: .system, content: mm.buildWorkingMemoryExtractionPrompt())
+        ] + recentForExtraction
+
+        sendAuxiliaryRequest(workingMemoryMessages) { [weak self] responseText in
+            guard let self, let mm = self.memoryManager else { return }
+            self.isExtractingWorkingMemory = false
+
+            if let newWorkingMemory = mm.parseWorkingMemoryResponse(responseText) {
+                mm.updateWorkingMemory(newWorkingMemory)
+            }
+
+            // Шаг 2: Периодически извлекаем долговременную память (каждые 5 обменов)
+            if mm.shouldExtractLongTermMemory() {
+                self.extractLongTermMemoryAndSend(mm: mm)
+            } else {
+                self.sendWithMemoryLayers()
+            }
+        }
+    }
+
+    private func extractLongTermMemoryAndSend(mm: MemoryManager) {
+        isExtractingLongTermMemory = true
+
+        let existingMemoryText = mm.longTermMemory.asSystemPromptText()
+        let recentForLongTerm = Array(effectiveMessages().suffix(10))
+        let longTermMessages = [
+            Message(role: .system, content: mm.buildLongTermMemoryExtractionPrompt(
+                existingMemory: existingMemoryText
+            ))
+        ] + recentForLongTerm
+
+        sendAuxiliaryRequest(longTermMessages) { [weak self] responseText in
+            guard let self, let mm = self.memoryManager else { return }
+            self.isExtractingLongTermMemory = false
+
+            if let newEntries = mm.parseLongTermMemoryResponse(responseText), !newEntries.isEmpty {
+                mm.updateLongTermMemory(with: newEntries)
+            }
+            mm.resetLongTermExtractionCounter()
+
+            self.sendWithMemoryLayers()
+        }
+    }
+
+    private func sendWithMemoryLayers() {
+        let messagesToSend = prepareMessagesForAPI()
+        sendMessages(messagesToSend) { [weak self] responseMessage in
+            guard let self else { return }
+            appendMessage(responseMessage)
+            persistCurrentMessages()
         }
     }
 

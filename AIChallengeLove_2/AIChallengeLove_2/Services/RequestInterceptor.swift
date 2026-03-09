@@ -18,6 +18,7 @@ final class RequestInterceptor: Alamofire.RequestInterceptor {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let userDefaults = UserDefaults.standard
+    private let maxRetryCount = 5
 
     var getGigaToken: String? {
         guard let token: GigaToken = object(forKey: saveGigaTokenKey),
@@ -75,6 +76,25 @@ final class RequestInterceptor: Alamofire.RequestInterceptor {
         }
 
         completion(.success(urlRequest))
+    }
+
+    func retry(_ request: Request, for session: Session, dueTo error: Error, completion: @escaping (RetryResult) -> Void) {
+        guard let response = request.task?.response as? HTTPURLResponse,
+              response.statusCode == 429
+        else {
+            completion(.doNotRetry)
+            return
+        }
+
+        let retryCount = request.retryCount
+        guard retryCount < maxRetryCount else {
+            completion(.doNotRetryWithError(error))
+            return
+        }
+
+        let delay = pow(2.0, Double(retryCount + 1))
+        print("429 Too Many Requests. Retry \(retryCount + 1)/\(maxRetryCount) через \(delay) сек.")
+        completion(.retryWithDelay(delay))
     }
 
     private func save(_ object: Encodable, forKey: String) {
