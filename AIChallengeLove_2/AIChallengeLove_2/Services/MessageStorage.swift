@@ -22,6 +22,10 @@ final class MessageStorage {
     private let activeLineIdKey = "savedActiveLineId"
     private let workingMemoryKey = "savedWorkingMemory"
     private let longTermMemoryKey = "savedLongTermMemory"
+    private let userProfileKey = "savedUserProfile"
+    private let taskStateKey = "savedTaskState"
+    private let invariantsKey = "savedInvariants"
+    private let systemPromptConfigKey = "savedSystemPromptConfig"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -55,7 +59,8 @@ final class MessageStorage {
         clearBranches()
         clearDialogLines()
         clearWorkingMemory()
-        // НЕ очищаем долговременную память — она живёт между диалогами
+        clearTaskState()
+        // НЕ очищаем долговременную память, профиль и инварианты — они живут между диалогами
     }
 
     // MARK: - Info (Statistics)
@@ -322,5 +327,63 @@ final class MessageStorage {
         var info = loadInfo()
         info.session[api] = SessionGPT(input: 0, output: 0, total: 0)
         saveInfo(info)
+    }
+
+    // MARK: - User Profile (legacy keys preserved for data compat)
+
+    // MARK: - Task State
+
+    func saveTaskState(_ state: TaskState) {
+        do {
+            let data = try encoder.encode(state)
+            userDefaults.set(data, forKey: taskStateKey)
+        } catch {
+            print("Ошибка сохранения состояния задачи: \(error.localizedDescription)")
+        }
+    }
+
+    func loadTaskState() -> TaskState {
+        guard let data = userDefaults.data(forKey: taskStateKey) else {
+            return TaskState()
+        }
+        do {
+            return try decoder.decode(TaskState.self, from: data)
+        } catch {
+            print("Ошибка загрузки состояния задачи: \(error.localizedDescription)")
+            return TaskState()
+        }
+    }
+
+    func clearTaskState() {
+        userDefaults.removeObject(forKey: taskStateKey)
+    }
+
+    // MARK: - Invariants (legacy keys preserved for data compat)
+
+    // MARK: - System Prompt Config
+
+    func saveSystemPromptConfig(_ config: SystemPromptConfig) {
+        do {
+            let data = try encoder.encode(config)
+            userDefaults.set(data, forKey: systemPromptConfigKey)
+        } catch {
+            print("Ошибка сохранения system prompt config: \(error.localizedDescription)")
+        }
+    }
+
+    func loadSystemPromptConfig() -> SystemPromptConfig {
+        guard let data = userDefaults.data(forKey: systemPromptConfigKey) else {
+            return SystemPromptConfig()
+        }
+        do {
+            return try decoder.decode(SystemPromptConfig.self, from: data)
+        } catch {
+            print("Ошибка загрузки system prompt config: \(error.localizedDescription)")
+            return SystemPromptConfig()
+        }
+    }
+
+    func clearSystemPromptConfig() {
+        userDefaults.removeObject(forKey: systemPromptConfigKey)
     }
 }

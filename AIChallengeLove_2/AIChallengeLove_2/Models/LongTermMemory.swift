@@ -102,4 +102,9 @@ struct LongTermMemory: Codable, Sendable {
             }
         }
     }
+
+    mutating func clear() {
+        entries.removeAll()
+        lastExtractionAt = nil
+    }
 }

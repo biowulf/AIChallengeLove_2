@@ -17,6 +17,12 @@ final class MemoryManager {
     var workingMemory: WorkingMemory
     var longTermMemory: LongTermMemory
 
+    // Единый system prompt (замена profile + invariants)
+    var systemPromptConfig: SystemPromptConfig
+
+    // Состояние задачи (state machine)
+    var taskState: TaskState
+
     /// Через сколько обменов извлекать долговременную память
     private let longTermExtractionInterval = 5
     private var exchangesSinceLastLongTermExtraction = 0
@@ -30,18 +36,26 @@ final class MemoryManager {
         self.shortTermMemory = ShortTermMemory(windowSize: windowSize)
         self.workingMemory = storage.loadWorkingMemory()
         self.longTermMemory = storage.loadLongTermMemory()
+        self.systemPromptConfig = storage.loadSystemPromptConfig()
+        self.taskState = storage.loadTaskState()
     }
 
     // MARK: - Context Composition
 
-    /// Собирает полный массив сообщений для API из всех 3 слоёв.
+    /// Собирает полный массив сообщений для API из всех слоёв.
     /// Гарантирует ровно один system message в результате.
+    /// Порядок приоритета: system prompt > долговременная память > рабочая память > задача (фазо-зависимый)
     func composeMessagesForAPI(allMessages: [Message]) -> [Message] {
         var result: [Message] = []
 
-        // Объединяем Layer 3 + Layer 2 в один system message
         var systemParts: [String] = []
 
+        // 1. Пользовательский system prompt (объединённые профиль + инварианты)
+        if systemPromptConfig.isActive, !systemPromptConfig.isEmpty {
+            systemParts.append(systemPromptConfig.customSystemPrompt)
+        }
+
+        // 2. Долговременная память
         if !longTermMemory.isEmpty {
             systemParts.append(
                 "Долговременная память о пользователе. Используй эту информацию " +
@@ -49,10 +63,17 @@ final class MemoryManager {
             )
         }
 
+        // 3. Рабочая память
         if !workingMemory.isEmpty {
             systemParts.append(
                 "Контекст текущей задачи (рабочая память):\n\n\(workingMemory.asSystemPromptText())"
             )
+        }
+
+        // 4. Состояние задачи — фазо-зависимый промпт
+        if taskState.isActive {
+            let phasePrompt = buildPhasePrompt(for: taskState)
+            systemParts.append(phasePrompt)
         }
 
         if !systemParts.isEmpty {
@@ -62,11 +83,138 @@ final class MemoryManager {
             ))
         }
 
-        // Layer 1: Краткосрочная память (последние N сообщений)
+        // Краткосрочная память (последние N сообщений)
         let recentMessages = shortTermMemory.recentMessages(from: allMessages)
         result.append(contentsOf: recentMessages)
 
         return result
+    }
+
+    // MARK: - Phase-dependent Prompt
+
+    /// Генерирует промпт для AI на основе текущей стадии задачи.
+    /// Каждый промпт содержит маркер, который AI пишет в конце ответа.
+    private func buildPhasePrompt(for state: TaskState) -> String {
+        let desc = state.taskDescription.isEmpty ? "(не указана)" : state.taskDescription
+        let stepsText = state.steps.isEmpty ? "(нет шагов)" : state.steps.enumerated().map { idx, step in
+            let marker = step.isCompleted ? "[x]" : (idx == state.currentStepIndex ? "[>]" : "[ ]")
+            return "\(marker) \(step.description)"
+        }.joined(separator: "\n")
+
+        switch state.currentPhase {
+        case .research:
+            return """
+                ══════════════════════════════════════
+                СТАДИЯ: 🔍 RESEARCH (Исследование)
+                Задача: \(desc)
+                ══════════════════════════════════════
+
+                ⚠️ ТОЛЬКО СБОР ИНФОРМАЦИИ — никакого кода и готовых решений!
+
+                Твои действия:
+                1. Проанализируй задачу, уточни требования.
+                2. Изучи что нужно для реализации: зависимости, структуры, API, ограничения.
+                3. Задай уточняющие вопросы если чего-то не хватает.
+                4. Составь резюме: что известно, что нужно сделать, возможные подходы.
+
+                Когда исследование завершено — в самом конце ответа напиши:
+
+                ИССЛЕДОВАНИЕ ЗАВЕРШЕНО
+
+                ❌ ЗАПРЕЩЕНО: писать код, реализовывать решение.
+                ✅ РАЗРЕШЕНО: задавать вопросы, анализировать, составлять резюме требований.
+                """
+
+        case .plan:
+            return """
+                ══════════════════════════════════════
+                СТАДИЯ: 📋 PLAN (Планирование)
+                Задача: \(desc)
+                ══════════════════════════════════════
+
+                ⚠️ ТОЛЬКО ПЛАН — никакого кода!
+
+                Твои действия:
+                1. На основе результатов исследования составь детальный пошаговый план.
+                2. Разбей на пронумерованные шаги — каждый шаг одна логическая единица работы.
+                3. Для каждого шага: что именно создаётся/изменяется, в каком файле, какой результат.
+                4. Укажи зависимости между шагами и возможные риски.
+
+                Когда план готов — в самом конце ответа напиши:
+
+                ПЛАН ГОТОВ
+
+                ❌ ЗАПРЕЩЕНО: писать код, реализовывать функции.
+                ✅ РАЗРЕШЕНО: описывать шаги, структуру, интерфейсы словами.
+                """
+
+        case .executing:
+            return """
+                ══════════════════════════════════════
+                СТАДИЯ: ⚙️ EXECUTING (Выполнение)
+                Задача: \(desc)
+                Шаги плана:
+                \(stepsText)
+                ══════════════════════════════════════
+
+                Твои действия:
+                1. Реализуй план шаг за шагом согласно плану выше.
+                2. Пиши полный рабочий код — без заглушек и TODO.
+                3. Объясняй ключевые решения по ходу.
+                4. Реализуй все шаги плана полностью.
+
+                Когда ВСЯ реализация завершена — в самом конце ответа напиши:
+
+                ВЫПОЛНЕНИЕ ЗАВЕРШЕНО
+
+                Если нужно пересмотреть исследование — напиши: НУЖНО ПЕРЕИССЛЕДОВАНИЕ
+                """
+
+        case .validation:
+            return """
+                ══════════════════════════════════════
+                СТАДИЯ: ✅ VALIDATION (Проверка)
+                Задача: \(desc)
+                Шаги плана:
+                \(stepsText)
+                ══════════════════════════════════════
+
+                Твои действия:
+                1. Сверь написанный код с планом — все ли шаги выполнены?
+                2. Проверь логику, крайние случаи, возможные ошибки.
+                3. Убедись, что код решает исходную задачу.
+
+                Если нашёл проблемы:
+                - Опиши их СЛОВАМИ (не переписывай код!)
+                - Если нужны доработки → напиши: НУЖНЫ ДОРАБОТКИ
+                - Если нужно пересмотреть исследование → напиши: НУЖНО ПЕРЕИССЛЕДОВАНИЕ
+
+                Если всё корректно и задача выполнена — напиши:
+
+                ПРОВЕРКА ПРОЙДЕНА
+                """
+
+        case .report:
+            return """
+                ══════════════════════════════════════
+                СТАДИЯ: 📝 REPORT (Отчёт)
+                Задача: \(desc)
+                ══════════════════════════════════════
+
+                Твои действия:
+                1. Подведи итоги: что сделано, какие решения приняты.
+                2. Перечисли все изменённые/созданные файлы.
+                3. Укажи что осталось за рамками (если есть).
+                4. Дай краткие инструкции по использованию результата.
+
+                Когда отчёт готов — напиши:
+
+                ОТЧЁТ ГОТОВ
+                """
+
+        case .idle, .done:
+            return ""
+        }
     }
 
     // MARK: - Working Memory Extraction
@@ -170,7 +318,7 @@ final class MemoryManager {
             Если новой долговременной информации нет, верни пустой массив []. \
             Пиши на том же языке, на котором ведётся беседа. \
             Максимум 5 новых записей за раз.
-            
+
             ответ строго только JSON
             """
     }
@@ -209,18 +357,43 @@ final class MemoryManager {
         storage.saveLongTermMemory(longTermMemory)
     }
 
+    // MARK: - Task State
+
+    /// Обновляет состояние задачи и сохраняет
+    func updateTaskState(_ newState: TaskState) {
+        taskState = newState
+        storage.saveTaskState(taskState)
+    }
+
+    /// Сбрасывает состояние задачи (при clearChat)
+    func clearTaskState() {
+        taskState = TaskState()
+        storage.saveTaskState(taskState)
+    }
+
+    // MARK: - System Prompt Config
+
+    /// Обновляет system prompt config и сохраняет
+    func updateSystemPromptConfig(_ config: SystemPromptConfig) {
+        systemPromptConfig = config
+        storage.saveSystemPromptConfig(systemPromptConfig)
+    }
+
     // MARK: - Clearing
 
-    /// Очищает краткосрочную и рабочую память (при clearChat). Долговременная — остаётся.
+    /// Очищает краткосрочную, рабочую память и состояние задачи (при clearChat).
+    /// Долговременная память и system prompt — остаются.
     func clearConversationMemory() {
         workingMemory = WorkingMemory()
         storage.saveWorkingMemory(workingMemory)
+        taskState = TaskState()
+        storage.saveTaskState(taskState)
         exchangesSinceLastLongTermExtraction = 0
     }
 
     /// Явная очистка долговременной памяти (только по запросу пользователя)
     func clearLongTermMemory() {
-        longTermMemory = LongTermMemory()
+        longTermMemory.clear()
         storage.saveLongTermMemory(longTermMemory)
     }
 

@@ -26,6 +26,12 @@ struct ChatDetailView: View {
                 if viewModel.isShowMemoryPanel {
                     MemoryPanelView(viewModel: viewModel)
                 }
+                if viewModel.isShowSystemPromptPanel {
+                    SystemPromptPanelView(viewModel: viewModel)
+                }
+                if viewModel.isShowTaskPanel {
+                    TaskPanelView(viewModel: viewModel)
+                }
                 if viewModel.isShowInfo {
                     InfoView(viewModel: viewModel)
                 }
@@ -86,6 +92,26 @@ struct ChatDetailView: View {
                 }
 
                 Button {
+                    viewModel.isShowSystemPromptPanel.toggle()
+                } label: {
+                    Image(systemName: "text.bubble")
+                }
+
+                Button {
+                    viewModel.isShowTaskPanel.toggle()
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "checklist")
+                        if viewModel.isTaskModeEnabled {
+                            Circle()
+                                .fill(viewModel.taskState.isActive ? Color.green : Color.orange)
+                                .frame(width: 7, height: 7)
+                                .offset(x: 4, y: -3)
+                        }
+                    }
+                }
+
+                Button {
                     viewModel.isShowInfo.toggle()
                 } label: {
                     Image(systemName: "exclamationmark.circle")
@@ -101,6 +127,15 @@ struct ChatDetailView: View {
                     .padding(.vertical, 4)
             }
         }
+    }
+
+    // MARK: - Computed helpers
+
+    private var chatInputPlaceholder: String {
+        if viewModel.isTaskModeEnabled && viewModel.taskState.isEmpty {
+            return "Опишите задачу — начнётся стадия Research..."
+        }
+        return "Сообщение..."
     }
 
     // MARK: - Chat View
@@ -212,21 +247,39 @@ struct ChatDetailView: View {
             }
 
             // Поле ввода и кнопка отправки
-            HStack {
-                TextField("Сообщение...", text: $viewModel.inputText, axis: .vertical)
-                    .lineLimit(1...5)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.gray.opacity(0.2))
-                    .cornerRadius(8)
+            // Enter — отправить, Shift+Enter — перенос строки
+            HStack(alignment: .bottom, spacing: 8) {
+                ZStack(alignment: .topLeading) {
+                    // Placeholder поверх поля когда пусто
+                    if viewModel.inputText.isEmpty {
+                        Text(chatInputPlaceholder)
+                            .font(.system(size: 13))
+                            .foregroundColor(Color(NSColor.placeholderTextColor))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 9)
+                            .allowsHitTesting(false)
+                    }
+                    MultilineTextField(
+                        text: $viewModel.inputText,
+                        onSubmit: viewModel.sendMessage
+                    )
+                    .frame(minHeight: 34, maxHeight: 120)
+                }
+                .frame(minHeight: 34)
+                .padding(.horizontal, 4)
+                .background(Color.gray.opacity(0.2))
+                .cornerRadius(8)
 
                 Button(action: viewModel.sendMessage) {
                     Text("Отправить")
-                        .padding()
+                        .font(.system(size: 13))
+                        .frame(height: 34)
+                        .padding(.horizontal, 14)
                         .background(Color.blue)
                         .foregroundColor(.white)
                         .cornerRadius(8)
                 }
+                .fixedSize()
                 .disabled(viewModel.isLoading || viewModel.isStreaming || viewModel.isSummarizing || viewModel.isExtractingFacts || viewModel.isClassifying || viewModel.isExtractingWorkingMemory || viewModel.isExtractingLongTermMemory)
             }
             .padding()

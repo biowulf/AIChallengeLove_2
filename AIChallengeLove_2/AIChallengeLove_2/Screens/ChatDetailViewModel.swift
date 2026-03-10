@@ -81,8 +81,26 @@ final class ChatDetailViewModel {
     var isExtractingLongTermMemory = false
     var isShowMemoryPanel = false
 
+    // System Prompt (unified profile + invariants)
+    var isShowSystemPromptPanel = false
+
+    // Task State
+    var isShowTaskPanel = false
+    var taskTransitionError: String? = nil
+    /// Если true — переходы между стадиями выполняются автоматически при обнаружении маркера AI
+    var isAutoTransition = false
+    /// Реактивное зеркало taskState из MemoryManager — обновляется через setTaskState()
+    var taskState: TaskState = TaskState()
+    /// Если true — первое сообщение в чате запускает стадийный поток (Research → ...)
+    var isTaskModeEnabled: Bool = false
+
     let network: NetworkService
     private let messageStorage = MessageStorage()
+
+    /// ID первого сообщения текущей стадии задачи.
+    /// Все сообщения начиная с этого ID включаются в API-запрос (stage isolation).
+    @ObservationIgnored
+    private var taskStageFirstMessageId: UUID? = nil
 
     init(network: NetworkService) {
         self.network = network
@@ -108,14 +126,16 @@ final class ChatDetailViewModel {
             storage: messageStorage,
             windowSize: self.contextWindowSize
         )
+        // Инициализируем реактивное зеркало taskState из сохранённого состояния
+        self.taskState = self.memoryManager?.taskState ?? TaskState()
     }
 
     // MARK: - Public
 
-    /// Возвращает сообщения для отображения в UI
+    /// Возвращает сообщения для отображения в UI.
+    /// Скрывает isStageContext (служебный контекст стадии) — он уходит в API, но не показывается пользователю.
     func effectiveMessages() -> [Message] {
-        // Для авто-ветвления показываем все сообщения линейно
-        return messages
+        return messages.filter { !$0.isStageContext }
     }
 
     /// Возвращает сообщения активной линии диалога (для контекста AI)
@@ -131,6 +151,34 @@ final class ChatDetailViewModel {
     func sendMessage() {
         guard !inputText.isEmpty else { return }
 
+        // 1. Проверяем: есть ли pending transition и пользователь подтверждает/корректирует?
+        if taskState.isActive, let pendingPhase = taskState.pendingTransition {
+            let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let confirmWords: Set<String> = ["ок", "ok", "да", "yes", "давай", "погнали",
+                                             "подтверждаю", "вперёд", "вперед", "го", "go",
+                                             "начнём", "начнем", "поехали", "да, переходим",
+                                             "переходим", "принято"]
+            if confirmWords.contains(trimmed) {
+                // Пользователь подтвердил → выполняем переход
+                inputText = ""
+                transitionTask(to: pendingPhase)
+                return
+            } else {
+                // Пользователь дал корректировку → сбрасываем pending, отправляем на AI
+                clearPendingTransition()
+                // Fall through: сообщение уйдёт в текущую стадию как корректировка
+            }
+        }
+
+        // 2. Task mode: первое сообщение становится описанием задачи и запускает Research
+        if isTaskModeEnabled && taskState.isEmpty {
+            let description = inputText
+            inputText = ""
+            startTaskFromMessage(description)
+            return
+        }
+
+        // 3. Обычная отправка
         let newMessage = Message(role: .user, content: inputText)
         inputText = ""
 
@@ -183,6 +231,7 @@ final class ChatDetailViewModel {
             guard let self else { return }
             appendMessage(responseMessage)
             persistCurrentMessages()
+            detectTaskMarkers(in: responseMessage.content)
         }
     }
 
@@ -196,12 +245,116 @@ final class ChatDetailViewModel {
         activeBranchId = nil
         dialogLines.removeAll()
         activeLineId = nil
-        memoryManager?.clearConversationMemory() // Очищаем рабочую, долговременная остаётся
+        taskTransitionError = nil
+        memoryManager?.clearConversationMemory() // Очищаем рабочую + задачу, долговременная память и system prompt остаются
+        taskState = TaskState() // Сбрасываем реактивное зеркало
+        taskStageFirstMessageId = nil
         messageStorage.clearMessages()
     }
 
     func clearLongTermMemory() {
         memoryManager?.clearLongTermMemory()
+    }
+
+    // MARK: - System Prompt Config
+
+    func updateSystemPromptConfig(_ config: SystemPromptConfig) {
+        memoryManager?.updateSystemPromptConfig(config)
+    }
+
+    // MARK: - Task State Controls
+
+    /// Синхронно обновляет taskState в реактивном свойстве ViewModel и в MemoryManager.
+    /// Используй только этот метод для изменения состояния задачи.
+    private func setTaskState(_ state: TaskState) {
+        taskState = state
+        memoryManager?.updateTaskState(state)
+    }
+
+    func transitionTask(to phase: TaskPhase) {
+        let fromPhase = taskState.currentPhase
+        var state = taskState
+        let result = TaskStateMachine.tryTransition(from: fromPhase, to: phase, state: &state)
+        switch result {
+        case .success:
+            setTaskState(state)
+            taskTransitionError = nil
+            appendTransitionMessage(from: fromPhase, to: phase)
+            // Передаём результат предыдущей стадии как контекст следующей
+            autoSendStageResult(from: fromPhase)
+        case .failure(let error):
+            taskTransitionError = error.localizedDescription
+        }
+    }
+
+    func resetTask() {
+        let fromPhase = taskState.currentPhase
+        setTaskState(TaskState())
+        taskStageFirstMessageId = nil
+        taskTransitionError = nil
+        if fromPhase != .idle {
+            appendTransitionMessage(from: fromPhase, to: .idle, reason: "Сброс задачи")
+        }
+    }
+
+    /// Сбрасывает pendingTransition (пользователь отклонил предложение AI)
+    func clearPendingTransition() {
+        var state = taskState
+        state.pendingTransition = nil
+        setTaskState(state)
+        taskTransitionError = nil
+    }
+
+    /// Запускает задачу из первого сообщения чата — устанавливает описание и переводит в Research
+    private func startTaskFromMessage(_ description: String) {
+        var state = taskState
+        state.taskDescription = description
+        let result = TaskStateMachine.tryTransition(from: state.currentPhase, to: .research, state: &state)
+        switch result {
+        case .success:
+            setTaskState(state)
+            taskTransitionError = nil
+            appendTransitionMessage(from: .idle, to: .research)
+            // Добавляем задачу как сообщение пользователя и отправляем AI
+            let userMessage = Message(role: .user, content: description)
+            taskStageFirstMessageId = userMessage.id   // Research начинается с этого сообщения
+            appendMessage(userMessage)
+            performSend()
+        case .failure(let error):
+            taskTransitionError = error.localizedDescription
+        }
+    }
+
+    /// Передаёт последний ответ AI как контекст первого сообщения следующей стадии.
+    /// Сообщение помечается isStageContext=true — скрыто в UI, но включено в API.
+    private func autoSendStageResult(from fromPhase: TaskPhase) {
+        let lastAssistantContent = messages
+            .filter { $0.role == .assistant && !$0.isTransitionMarker }
+            .last?.content ?? ""
+        guard !lastAssistantContent.isEmpty else { return }
+
+        let stageResultMessage = Message(
+            role: .user,
+            content: "Контекст из стадии \(fromPhase.emoji) \(fromPhase.label):\n\n\(lastAssistantContent)",
+            isStageContext: true   // скрыто в чате, видно только в API
+        )
+        taskStageFirstMessageId = stageResultMessage.id  // новая стадия начинается здесь
+        appendMessage(stageResultMessage)
+        performSend()
+    }
+
+    // MARK: - Transition Message
+
+    /// Добавляет информационное сообщение о смене стадии — только для UI, не отправляется в AI
+    private func appendTransitionMessage(from: TaskPhase, to: TaskPhase, reason: String = "") {
+        let reasonSuffix = reason.isEmpty ? "" : " (\(reason))"
+        let content = "⟶ Стадия: \(from.emoji) \(from.label) → \(to.emoji) \(to.label)\(reasonSuffix)"
+        let markerMessage = Message(
+            role: .system,
+            content: content,
+            isTransitionMarker: true
+        )
+        appendMessage(markerMessage)
     }
 
     func clearSessionStats() {
@@ -432,7 +585,19 @@ final class ChatDetailViewModel {
 
     private func prepareMessagesForAPI() -> [Message] {
         var processedMessages: [Message]
-        let allMessages = effectiveMessages()
+
+        // Stage isolation: если активна задача, берём только сообщения текущей стадии.
+        // Иначе — вся история (без маркеров и stage-context сообщений).
+        let allMessages: [Message]
+        if taskState.isActive,
+           let firstId = taskStageFirstMessageId,
+           let startIdx = messages.firstIndex(where: { $0.id == firstId }) {
+            // Текущая стадия: от stage-context-сообщения до конца, без transition-маркеров
+            allMessages = Array(messages[startIdx...]).filter { !$0.isTransitionMarker }
+        } else {
+            // Обычный режим: вся история без маркеров и без скрытых stage-context сообщений
+            allMessages = messages.filter { !$0.isTransitionMarker && !$0.isStageContext }
+        }
 
         switch contextStrategy {
         case .none:
@@ -510,12 +675,39 @@ final class ChatDetailViewModel {
             }
 
         case .memoryLayers:
-            // Слои памяти: MemoryManager собирает контекст из 3 слоёв
+            // Слои памяти: MemoryManager собирает контекст из всех слоёв (включая профиль, инварианты, задачу)
             if let mm = memoryManager {
                 processedMessages = mm.composeMessagesForAPI(allMessages: allMessages)
             } else {
                 // Fallback: sliding window
                 processedMessages = Array(allMessages.suffix(contextWindowSize))
+            }
+        }
+
+        // Инъекция system prompt + состояния задачи для ВСЕХ стратегий кроме memoryLayers
+        // (memoryLayers уже обрабатывает их в composeMessagesForAPI)
+        if contextStrategy != .memoryLayers, let mm = memoryManager {
+            var injectionParts: [String] = []
+
+            if mm.systemPromptConfig.isActive, !mm.systemPromptConfig.isEmpty {
+                injectionParts.append(mm.systemPromptConfig.customSystemPrompt)
+            }
+
+            if taskState.isActive {
+                injectionParts.append(taskState.asSystemPromptText())
+            }
+
+            if !injectionParts.isEmpty {
+                let injectionText = injectionParts.joined(separator: "\n\n---\n\n")
+                if let firstSystemIdx = processedMessages.firstIndex(where: { $0.role == .system }) {
+                    let existing = processedMessages[firstSystemIdx]
+                    processedMessages[firstSystemIdx] = Message(
+                        role: .system,
+                        content: injectionText + "\n\n---\n\n" + existing.content
+                    )
+                } else {
+                    processedMessages.insert(Message(role: .system, content: injectionText), at: 0)
+                }
             }
         }
 
@@ -606,7 +798,7 @@ final class ChatDetailViewModel {
         isExtractingFacts = true
         withAnimation { isLoading = true }
 
-        let recentMessages = Array(effectiveMessages().suffix(4))
+        let recentMessages = Array(effectiveMessages().filter { !$0.isTransitionMarker }.suffix(4))
         let extractionMessages = [
             Message(role: .system, content: buildFactExtractionPrompt())
         ] + recentMessages
@@ -684,8 +876,8 @@ final class ChatDetailViewModel {
         isExtractingWorkingMemory = true
         withAnimation { isLoading = true }
 
-        // Шаг 1: Извлекаем рабочую память из последних 6 сообщений
-        let recentForExtraction = Array(effectiveMessages().suffix(6))
+        // Шаг 1: Извлекаем рабочую память из последних 6 сообщений (без системных маркеров стадий)
+        let recentForExtraction = Array(effectiveMessages().filter { !$0.isTransitionMarker }.suffix(6))
         let workingMemoryMessages = [
             Message(role: .system, content: mm.buildWorkingMemoryExtractionPrompt())
         ] + recentForExtraction
@@ -700,18 +892,20 @@ final class ChatDetailViewModel {
 
             // Шаг 2: Периодически извлекаем долговременную память (каждые 5 обменов)
             if mm.shouldExtractLongTermMemory() {
-                self.extractLongTermMemoryAndSend(mm: mm)
+                self.extractLongTermMemoryAndThen(mm: mm) {
+                    self.sendWithMemoryLayers()
+                }
             } else {
                 self.sendWithMemoryLayers()
             }
         }
     }
 
-    private func extractLongTermMemoryAndSend(mm: MemoryManager) {
+    private func extractLongTermMemoryAndThen(mm: MemoryManager, completion: @escaping () -> Void) {
         isExtractingLongTermMemory = true
 
         let existingMemoryText = mm.longTermMemory.asSystemPromptText()
-        let recentForLongTerm = Array(effectiveMessages().suffix(10))
+        let recentForLongTerm = Array(effectiveMessages().filter { !$0.isTransitionMarker }.suffix(10))
         let longTermMessages = [
             Message(role: .system, content: mm.buildLongTermMemoryExtractionPrompt(
                 existingMemory: existingMemoryText
@@ -727,7 +921,7 @@ final class ChatDetailViewModel {
             }
             mm.resetLongTermExtractionCounter()
 
-            self.sendWithMemoryLayers()
+            completion()
         }
     }
 
@@ -737,7 +931,77 @@ final class ChatDetailViewModel {
             guard let self else { return }
             appendMessage(responseMessage)
             persistCurrentMessages()
+            detectTaskMarkers(in: responseMessage.content)
         }
+    }
+
+    // MARK: - Task Marker Detection
+
+    /// Детектирует маркеры стадий в ответе AI.
+    /// В авто-режиме — сразу выполняет переход.
+    /// В ручном режиме — устанавливает pendingTransition для подтверждения пользователем.
+    private func detectTaskMarkers(in text: String) {
+        guard taskState.isActive else { return }
+
+        let uppercased = text.uppercased()
+        let current = taskState.currentPhase
+
+        // Определяем целевую стадию по маркеру
+        var targetPhase: TaskPhase?
+
+        switch current {
+        case .research:
+            if uppercased.contains("ИССЛЕДОВАНИЕ ЗАВЕРШЕНО") {
+                targetPhase = .plan
+            }
+        case .plan:
+            if uppercased.contains("ПЛАН ГОТОВ") {
+                targetPhase = .executing
+            }
+        case .executing:
+            if uppercased.contains("ВЫПОЛНЕНИЕ ЗАВЕРШЕНО") {
+                targetPhase = .validation
+            } else if uppercased.contains("НУЖНО ПЕРЕИССЛЕДОВАНИЕ") {
+                targetPhase = .research
+            }
+        case .validation:
+            if uppercased.contains("ПРОВЕРКА ПРОЙДЕНА") {
+                targetPhase = .done           // Validation → Done напрямую
+            } else if uppercased.contains("НУЖНЫ ДОРАБОТКИ") {
+                targetPhase = .executing
+            } else if uppercased.contains("НУЖНО ПЕРЕИССЛЕДОВАНИЕ") {
+                targetPhase = .research
+            }
+        case .report:
+            if uppercased.contains("ОТЧЁТ ГОТОВ") {
+                targetPhase = .done
+            }
+        default:
+            break
+        }
+
+        guard let target = targetPhase else { return }
+
+        if isAutoTransition {
+            // Авто-режим: выполняем переход сразу
+            transitionTask(to: target)
+        } else {
+            // Ручной режим: устанавливаем pending + показываем запрос подтверждения в чате
+            var state = taskState
+            state.pendingTransition = target
+            setTaskState(state)
+            appendConfirmationRequest(from: current, to: target)
+        }
+    }
+
+    /// Добавляет сообщение-запрос подтверждения в чат (не отправляется в AI)
+    private func appendConfirmationRequest(from fromPhase: TaskPhase, to toPhase: TaskPhase) {
+        let content = """
+            💬 AI предлагает: \(fromPhase.emoji) \(fromPhase.label) → \(toPhase.emoji) \(toPhase.label)
+            Напишите «ок», «давай» или «погнали» для перехода — или опишите что нужно исправить.
+            """
+        let msg = Message(role: .system, content: content, isTransitionMarker: true)
+        appendMessage(msg)
     }
 
     // MARK: - Auxiliary LLM request (summarization / fact extraction)
