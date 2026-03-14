@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		259A44142F4348A10091555B /* Alamofire in Frameworks */ = {isa = PBXBuildFile; productRef = 259A44132F4348A10091555B /* Alamofire */; };
+		259A44152F4348A10091555B /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = 259A44172F4348A10091555B /* MCP */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				259A44142F4348A10091555B /* Alamofire in Frameworks */,
+				259A44152F4348A10091555B /* MCP in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +73,7 @@
 			name = AIChallengeLove_2;
 			packageProductDependencies = (
 				259A44132F4348A10091555B /* Alamofire */,
+				259A44172F4348A10091555B /* MCP */,
 			);
 			productName = AIChallengeLove_2;
 			productReference = 259A43FF2F4348410091555B /* AIChallengeLove_2.app */;
@@ -102,6 +105,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				259A44122F4348A10091555B /* XCRemoteSwiftPackageReference "Alamofire" */,
+				259A44162F4348A10091555B /* XCRemoteSwiftPackageReference "swift-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 259A44002F4348410091555B /* Products */;
@@ -364,6 +368,14 @@
 				minimumVersion = 5.11.1;
 			};
 		};
+		259A44162F4348A10091555B /* XCRemoteSwiftPackageReference "swift-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/modelcontextprotocol/swift-sdk";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.11.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -371,6 +383,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 259A44122F4348A10091555B /* XCRemoteSwiftPackageReference "Alamofire" */;
 			productName = Alamofire;
+		};
+		259A44172F4348A10091555B /* MCP */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 259A44162F4348A10091555B /* XCRemoteSwiftPackageReference "swift-sdk" */;
+			productName = MCP;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

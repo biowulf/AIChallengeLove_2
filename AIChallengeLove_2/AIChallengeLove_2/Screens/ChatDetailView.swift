@@ -35,6 +35,9 @@ struct ChatDetailView: View {
                 if viewModel.isShowInfo {
                     InfoView(viewModel: viewModel)
                 }
+                if viewModel.isShowMCPPanel {
+                    MCPSettingsView(mcpManager: viewModel.mcpManager)
+                }
             }
         }
     }
@@ -105,6 +108,20 @@ struct ChatDetailView: View {
                         if viewModel.isTaskModeEnabled {
                             Circle()
                                 .fill(viewModel.taskState.isActive ? Color.green : Color.orange)
+                                .frame(width: 7, height: 7)
+                                .offset(x: 4, y: -3)
+                        }
+                    }
+                }
+
+                Button {
+                    viewModel.isShowMCPPanel.toggle()
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "network")
+                        if viewModel.mcpManager.isEnabled {
+                            Circle()
+                                .fill(viewModel.mcpManager.isConnecting ? Color.orange : Color.teal)
                                 .frame(width: 7, height: 7)
                                 .offset(x: 4, y: -3)
                         }

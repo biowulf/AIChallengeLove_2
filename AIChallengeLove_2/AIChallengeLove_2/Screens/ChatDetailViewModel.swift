@@ -84,6 +84,10 @@ final class ChatDetailViewModel {
     // System Prompt (unified profile + invariants)
     var isShowSystemPromptPanel = false
 
+    // MCP
+    var isShowMCPPanel = false
+    var mcpManager = MCPManager()
+
     // Task State
     var isShowTaskPanel = false
     var taskTransitionError: String? = nil
