@@ -231,11 +231,161 @@ final class ChatDetailViewModel {
 
         // Все остальные стратегии — отправляем напрямую
         let messagesToSend = prepareMessagesForAPI()
-        sendMessages(messagesToSend) { [weak self] responseMessage in
+
+        // MCP Function Calling: только GigaChat, без стриминга, если MCP включён и есть инструменты
+        if mcpManager.isEnabled && gptAPI == .gigachat && !useStreaming && !mcpManager.allTools.isEmpty {
+            sendWithMCPFunctions(messages: messagesToSend) { [weak self] responseMessage in
+                guard let self else { return }
+                appendMessage(responseMessage)
+                persistCurrentMessages()
+                detectTaskMarkers(in: responseMessage.content)
+            }
+        } else {
+            sendMessages(messagesToSend) { [weak self] responseMessage in
+                guard let self else { return }
+                appendMessage(responseMessage)
+                persistCurrentMessages()
+                detectTaskMarkers(in: responseMessage.content)
+            }
+        }
+    }
+
+    // MARK: - MCP Function Calling
+
+    /// Отправляет запрос к GigaChat с описанием MCP-инструментов.
+    /// Если модель решает вызвать функцию — незаметно вызывает MCP, подставляет
+    /// результат и делает финальный запрос к GigaChat. Весь внутренний обмен
+    /// скрыт от пользователя.
+    private func sendWithMCPFunctions(messages: [Message], completion: @escaping (Message) -> Void) {
+        withAnimation { isLoading = true }
+
+        let functions = mcpManager.allTools.compactMap { $0.toGigaFunction() }
+        guard !functions.isEmpty else {
+            // Инструменты есть, но не удалось построить GigaFunction — fallback
+            sendNonStreamingRequest(messages: messages,
+                                    maxTokens: Int(maxTokensText),
+                                    temperature: Float(temperature),
+                                    completion: completion)
+            return
+        }
+
+        let maxTokens = Int(maxTokensText)
+        let temp      = Float(temperature)
+
+        network.fetch(for: messages,
+                      model: gigaChatModel,
+                      maxTokens: maxTokens,
+                      temperature: temp,
+                      functions: functions) { [weak self] result in
             guard let self else { return }
-            appendMessage(responseMessage)
-            persistCurrentMessages()
-            detectTaskMarkers(in: responseMessage.content)
+            switch result {
+            case .success(let payload):
+                guard let choice = payload.choices.first else {
+                    isLoading = false
+                    return
+                }
+
+                print("[MCP] finishReason=\(choice.finishReason), functionCall=\(String(describing: choice.message.functionCall?.name))")
+
+                if choice.finishReason == .functionCall {
+                    guard let functionCall = choice.message.functionCall else {
+                        // Декодирование function_call не удалось — показываем ответ AI как есть
+                        print("[MCP] ⚠️ finishReason==functionCall, но message.functionCall = nil. Проверь структуру ответа GigaChat.")
+                        isLoading = false
+                        completion(choice.message)
+                        return
+                    }
+                    print("[MCP] → вызываем инструмент '\(functionCall.name)' args: \(functionCall.arguments)")
+                    // Добавляем сообщение ассистента с function_call в контекст (скрыто от UI)
+                    let contextMessages = messages + [choice.message]
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        await executeMCPTool(toolName:        functionCall.name,
+                                             arguments:       functionCall.arguments,
+                                             contextMessages: contextMessages,
+                                             functions:       functions,
+                                             completion:      completion)
+                    }
+                } else {
+                    // Обычный ответ без function call
+                    isLoading = false
+                    completion(choice.message)
+                    updateUsageStats(usage: payload.usage)
+                }
+            case .failure(let error):
+                isLoading = false
+                lastRequestFailed = true
+                print("[MCP] sendWithMCPFunctions error: \(error)")
+            }
+        }
+    }
+
+    /// Вызывает MCP-инструмент, добавляет результат в контекст и делает
+    /// финальный запрос к GigaChat для получения ответа пользователю.
+    @MainActor
+    private func executeMCPTool(toolName:        String,
+                                 arguments:       String,
+                                 contextMessages: [Message],
+                                 functions:       [GigaFunction],
+                                 completion:      @escaping (Message) -> Void) async {
+        do {
+            print("[MCP] Calling tool '\(toolName)' with args: \(arguments)")
+            let toolResult = try await mcpManager.callTool(name: toolName, jsonArguments: arguments)
+
+            // GigaChat требует content роли function в виде валидного JSON-объекта (строка).
+            // Если MCP уже вернул JSON-объект — передаём напрямую, иначе оборачиваем в {"result": "..."}.
+            let jsonContent: String
+            let trimmed = toolResult.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("{"),
+               let raw = trimmed.data(using: .utf8),
+               try JSONSerialization.jsonObject(with: raw) is [String: Any] {
+                // MCP вернул структурированный JSON — передаём как есть
+                jsonContent = trimmed
+                print("[MCP] Tool '\(toolName)' returned structured JSON")
+            } else if let data = try? JSONSerialization.data(withJSONObject: ["result": toolResult]),
+                      let str = String(data: data, encoding: .utf8) {
+                // Plain-text результат — оборачиваем
+                jsonContent = str
+            } else {
+                jsonContent = "{\"result\": \"\"}"
+            }
+
+            // Сообщение с результатом функции — скрыто от UI (isStageContext)
+            let functionResultMsg = Message(
+                role:           .function,
+                content:        jsonContent,
+                isStageContext: true,   // не отображается в чате
+                name:           toolName
+            )
+
+            // Финальный запрос: контекст + ответ функции
+            let finalMessages = contextMessages + [functionResultMsg]
+
+            network.fetch(for: finalMessages,
+                          model: gigaChatModel,
+                          maxTokens: Int(maxTokensText),
+                          temperature: Float(temperature),
+                          functions: functions) { [weak self] result in
+                guard let self else { return }
+                isLoading = false
+                switch result {
+                case .success(let payload):
+                    if let msg = payload.choices.first?.message {
+                        completion(msg)
+                        updateUsageStats(usage: payload.usage)
+                    }
+                case .failure(let error):
+                    lastRequestFailed = true
+                    print("[MCP] Final request error: \(error)")
+                }
+            }
+        } catch {
+            isLoading = false
+            print("[MCP] Tool execution error: \(error)")
+            // Показываем пользователю сообщение об ошибке
+            let errorMsg = Message(role: .assistant,
+                                   content: "Не удалось получить данные: \(error.localizedDescription)")
+            completion(errorMsg)
         }
     }
 

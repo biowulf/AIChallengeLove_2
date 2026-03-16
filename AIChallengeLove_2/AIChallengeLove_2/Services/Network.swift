@@ -44,6 +44,7 @@ class NetworkService {
                format: Format = .text,
                maxTokens: Int? = nil,
                temperature: Float = 0,
+               functions: [GigaFunction] = [],
                completion: @escaping (Result<ResponsePayload, AFError>) -> Void) {
 
         var messages: [Message] = newMessages
@@ -51,13 +52,15 @@ class NetworkService {
             messages.insert(addJSONSystemPromt(), at: 0)
         }
 
+        let functionCall = functions.isEmpty ? "none" : "auto"
         let dto = RequestModel(model: model,
                                messages: messages,
                                temperature: temperature,
                                maxTokens: maxTokens,
                                repetitionPenalty: 1,
                                updateInterval: 0,
-                               functions: [],
+                               functionCall: functionCall,
+                               functions: functions,
                                stream: false)
 
         session.request("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
@@ -92,6 +95,7 @@ class NetworkService {
                                maxTokens: maxTokens,
                                repetitionPenalty: 1,
                                updateInterval: 0,
+                               functionCall: "none",
                                functions: [],
                                stream: true)
         
