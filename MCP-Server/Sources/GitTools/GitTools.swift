@@ -2,6 +2,23 @@ import Foundation
 import MCP
 
 // ═══════════════════════════════════════════════════════════
+// MARK: - GigaChat-совместимые типы параметров
+// ═══════════════════════════════════════════════════════════
+
+/// Типы параметров функций, которые принимает GigaChat.
+/// Источник: https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-chat
+///
+/// Поддерживаются: string, number, boolean, object, array.
+/// НЕ поддерживается: integer — GigaChat вернёт 500.
+public enum GCType {
+    public static let string  = Value.string("string")
+    public static let number  = Value.string("number")   // целые и дробные числа
+    public static let boolean = Value.string("boolean")
+    public static let object  = Value.string("object")
+    public static let array   = Value.string("array")
+}
+
+// ═══════════════════════════════════════════════════════════
 // MARK: - Open-Meteo API Response Models (private)
 // ═══════════════════════════════════════════════════════════
 
@@ -78,10 +95,10 @@ public enum WeatherToolDefs {
         name: "get_weather",
         description: "Получить текущую погоду для указанного города. Возвращает температуру, влажность, скорость ветра и описание погоды.",
         inputSchema: .object([
-            "type": .string("object"),
+            "type": GCType.object,
             "properties": .object([
                 "location": .object([
-                    "type": .string("string"),
+                    "type":        GCType.string,
                     "description": .string("Название города или местоположения, например: Москва, London, New York")
                 ])
             ]),

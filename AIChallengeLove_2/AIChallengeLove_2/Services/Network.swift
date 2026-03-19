@@ -54,7 +54,7 @@ class NetworkService {
 
         let functionCall = functions.isEmpty ? "none" : "auto"
         let dto = RequestModel(model: model,
-                               messages: messages,
+                               messages: messages.asAPIMessages,
                                temperature: temperature,
                                maxTokens: maxTokens,
                                repetitionPenalty: 1,
@@ -90,7 +90,7 @@ class NetworkService {
         }
         
         let dto = RequestModel(model: model,
-                               messages: messages,
+                               messages: messages.asAPIMessages,
                                temperature: temperature,
                                maxTokens: maxTokens,
                                repetitionPenalty: 1,

@@ -1,19 +1,43 @@
-PID_FILE = .server.pid
-PORT = 8080
+PID_FILE  = .server.pid
+PORT      = 8080
+PRODUCT   = MCPGitHTTP
+DEBUG_BIN = .build/debug/$(PRODUCT)
+REL_BIN   = .build/release/$(PRODUCT)
 
-.PHONY: build run stop restart status logs clean test test-repos test-issues test-client help
+.PHONY: build build-release run run-release start stop restart status logs clean test test-client help
 
+# ── Compile ────────────────────────────────────────────────
+
+## Compile debug binary (fast, incremental)
 build:
-	swift build -c release
+	swift build --product $(PRODUCT)
 
-run: build
-	.build/release/MCPGitHTTP
+## Compile optimised release binary
+build-release:
+	swift build -c release --product $(PRODUCT)
 
-start: build
+# ── Run (no recompile) ─────────────────────────────────────
+
+## Run the existing debug binary — does NOT recompile.
+## Build first with: make build
+run:
+	@test -f $(DEBUG_BIN) || (echo "❌  Binary not found. Run 'make build' first." && exit 1)
+	$(DEBUG_BIN)
+
+## Run the existing release binary — does NOT recompile.
+## Build first with: make build-release
+run-release:
+	@test -f $(REL_BIN) || (echo "❌  Binary not found. Run 'make build-release' first." && exit 1)
+	$(REL_BIN)
+
+# ── Background management ──────────────────────────────────
+
+## Build release and start in the background
+start: build-release
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "⚠️  Уже запущен (PID $$(cat $(PID_FILE)))"; \
 	else \
-		.build/release/MCPGitHTTP > .server.log 2>&1 & \
+		$(REL_BIN) > .server.log 2>&1 & \
 		echo $$! > $(PID_FILE); \
 		sleep 1; \
 		if kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
@@ -51,38 +75,43 @@ status:
 logs:
 	@tail -f .server.log 2>/dev/null || echo "Нет лог-файла"
 
+# ── Testing ────────────────────────────────────────────────
+
+## Test via MCP Streamable HTTP (requires running server).
+## The server creates a session on the first POST with initialize.
 test:
-	@curl -s -X POST http://localhost:$(PORT)/mcp \
+	@echo "=== MCP Streamable HTTP — initialize ==="
+	@SESSION=$$(curl -s -D - -X POST http://localhost:$(PORT)/mcp \
 		-H "Content-Type: application/json" \
-		-d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -m json.tool
-
-test-repos:
-	@curl -s -X POST http://localhost:$(PORT)/mcp \
-		-H "Content-Type: application/json" \
-		-d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_repos","arguments":{"language":"Swift"}}}' | python3 -m json.tool
-
-test-issues:
-	@curl -s -X POST http://localhost:$(PORT)/mcp \
-		-H "Content-Type: application/json" \
-		-d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_issues","arguments":{"repo":"ios-weather-app","state":"open"}}}' | python3 -m json.tool
+		-H "Accept: application/json, text/event-stream" \
+		-d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' \
+		2>/dev/null | grep -i "mcp-session-id" | awk '{print $$2}' | tr -d '\r'); \
+	echo "Session: $$SESSION"
 
 test-client: build
-	.build/release/MCPGitClient http://localhost:$(PORT)/mcp
+	$(DEBUG_BIN) &
+	sleep 2
+	.build/debug/MCPGitClient http://localhost:$(PORT)/mcp || true
+
+# ── Cleanup ────────────────────────────────────────────────
 
 clean: stop
 	rm -rf .build .server.log .server.pid
 
+# ── Help ──────────────────────────────────────────────────
+
 help:
 	@echo ""
-	@echo "  make build       — собрать"
-	@echo "  make run         — Vapor на переднем плане (Ctrl+C)"
-	@echo "  make start       — Vapor в фоне"
-	@echo "  make stop        — остановить"
-	@echo "  make restart     — перезапустить"
-	@echo "  make status      — статус + health"
-	@echo "  make test        — tools/list"
-	@echo "  make test-repos  — list_repos"
-	@echo "  make test-issues — get_issues"
-	@echo "  make test-client — полный демо через SDK клиент"
-	@echo "  make clean       — очистить всё"
+	@echo "  make build          — скомпилировать debug-бинарь (инкрементально)"
+	@echo "  make build-release  — скомпилировать оптимизированный release"
+	@echo "  make run            — запустить debug-бинарь БЕЗ перекомпиляции"
+	@echo "  make run-release    — запустить release-бинарь БЕЗ перекомпиляции"
+	@echo "  make start          — release в фоне (build + start)"
+	@echo "  make stop           — остановить фоновый сервер"
+	@echo "  make restart        — перезапустить"
+	@echo "  make status         — статус + health"
+	@echo "  make logs           — tail логов фонового сервера"
+	@echo "  make test           — тест MCP initialize через curl"
+	@echo "  make test-client    — полный тест через SDK клиент"
+	@echo "  make clean          — удалить .build и логи"
 	@echo ""

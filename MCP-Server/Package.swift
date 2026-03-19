@@ -16,6 +16,15 @@ let package = Package(
             ],
             path: "Sources/GitTools"
         ),
+        .target(
+            name: "SchedulerTools",
+            dependencies: [
+                "GitTools",
+                .product(name: "MCP", package: "swift-sdk"),
+            ],
+            path: "Sources/SchedulerTools",
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
         .executableTarget(
             name: "MCPGitStdio",
             dependencies: [
@@ -28,6 +37,7 @@ let package = Package(
             name: "MCPGitHTTP",
             dependencies: [
                 "GitTools",
+                "SchedulerTools",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Vapor", package: "vapor"),
             ],

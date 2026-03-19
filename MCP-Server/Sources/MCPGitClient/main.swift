@@ -13,7 +13,7 @@ struct MCPGitClientApp {
         let client = Client(name: "mcp-git-client", version: "1.0.0")
         let transport = HTTPClientTransport(
             endpoint: URL(string: serverURL)!,
-            streaming: false
+            streaming: true   // Streamable HTTP: POST returns SSE, GET /mcp for push
         )
 
         let initResult = try await client.connect(transport: transport)

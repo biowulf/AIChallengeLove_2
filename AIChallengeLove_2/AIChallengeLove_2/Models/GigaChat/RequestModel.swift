@@ -11,7 +11,7 @@
 
 nonisolated struct RequestModel: Encodable, Sendable {
     let model: GigaChatModel
-    let messages: [Message]
+    let messages: [APIMessage]
     let temperature: Float
     let maxTokens: Int?
     let repetitionPenalty: Float
@@ -20,6 +20,28 @@ nonisolated struct RequestModel: Encodable, Sendable {
     let functionCall: String
     let functions: [GigaFunction]
     let stream: Bool
+
+    func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(model,             forKey: .model)
+        try c.encode(messages,          forKey: .messages)
+        try c.encode(temperature,       forKey: .temperature)
+        try c.encodeIfPresent(maxTokens, forKey: .maxTokens)
+        try c.encode(repetitionPenalty, forKey: .repetitionPenalty)
+        try c.encode(updateInterval,    forKey: .updateInterval)
+        try c.encode(stream,            forKey: .stream)
+        // GigaChat возвращает 500 если передать functions: [] (пустой массив).
+        // Отправляем function_call и functions только когда есть реальные функции.
+        if !functions.isEmpty {
+            try c.encode(functionCall, forKey: .functionCall)
+            try c.encode(functions,    forKey: .functions)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case model, messages, temperature, maxTokens, repetitionPenalty,
+             updateInterval, stream, functionCall, functions
+    }
 }
 
 // ───────────────────────────────────────────────────────────

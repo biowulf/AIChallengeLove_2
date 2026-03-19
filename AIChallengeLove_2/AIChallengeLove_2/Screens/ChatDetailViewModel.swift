@@ -132,6 +132,56 @@ final class ChatDetailViewModel {
         )
         // Инициализируем реактивное зеркало taskState из сохранённого состояния
         self.taskState = self.memoryManager?.taskState ?? TaskState()
+
+        // Подключаем MCP push-уведомления: когда сервер присылает событие (погода, напоминание),
+        // автоматически отправляем его в GigaChat и показываем ответ в чате.
+        self.mcpManager.onPushNotification = { [weak self] eventData in
+            self?.autoSendPushMessage(eventData)
+        }
+    }
+
+    // MARK: - MCP Push Notifications
+
+    /// Вызывается автоматически при получении push-события с MCP-сервера.
+    /// Скрытно отправляет данные в GigaChat и показывает ответ в чате —
+    /// пользователь видит только готовый вывод ИИ, без сырых данных.
+    @MainActor
+    func autoSendPushMessage(_ eventData: String) {
+        guard mcpManager.isEnabled, gptAPI == .gigachat else { return }
+        guard !isLoading else {
+            print("[Push] Skipped — request in progress")
+            return
+        }
+
+        print("[Push] Auto-sending to GigaChat: \(eventData.prefix(120))")
+
+        // Скрытое системное сообщение — видно GigaChat, но не отображается в чате
+        let trigger = Message(
+            role: .user,
+            content: "Получены новые данные от сервера: \(eventData). Кратко сообщи об этом пользователю понятным языком.",
+            isStageContext: true
+        )
+
+        let messagesToSend = prepareMessagesForAPI() + [trigger]
+
+        withAnimation { isLoading = true }
+        network.fetch(for: messagesToSend,
+                      model: gigaChatModel,
+                      maxTokens: Int(maxTokensText),
+                      temperature: Float(temperature)) { [weak self] result in
+            guard let self else { return }
+            isLoading = false
+            switch result {
+            case .success(let payload):
+                if let msg = payload.choices.first?.message,
+                   !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    appendMessage(msg)
+                    persistCurrentMessages()
+                }
+            case .failure(let error):
+                print("[Push] GigaChat error: \(error)")
+            }
+        }
     }
 
     // MARK: - Public
@@ -358,19 +408,20 @@ final class ChatDetailViewModel {
                 name:           toolName
             )
 
-            // Финальный запрос: контекст + ответ функции
+            // Финальный запрос: контекст + ответ функции.
+            // functions НЕ передаём — GigaChat должен вернуть текст, а не ещё один tool call.
             let finalMessages = contextMessages + [functionResultMsg]
 
             network.fetch(for: finalMessages,
                           model: gigaChatModel,
                           maxTokens: Int(maxTokensText),
-                          temperature: Float(temperature),
-                          functions: functions) { [weak self] result in
+                          temperature: Float(temperature)) { [weak self] result in
                 guard let self else { return }
                 isLoading = false
                 switch result {
                 case .success(let payload):
-                    if let msg = payload.choices.first?.message {
+                    if let msg = payload.choices.first?.message,
+                       !msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         completion(msg)
                         updateUsageStats(usage: payload.usage)
                     }

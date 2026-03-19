@@ -9,6 +9,23 @@ import Foundation
 // MARK: - AnyCodingKey (вспомогательный ключ для произвольных словарей)
 // ───────────────────────────────────────────────────────────
 
+private extension String {
+    /// Конвертирует camelCase → snake_case.
+    /// Нужно потому что JSONDecoder с convertFromSnakeCase возвращает
+    /// конвертированные ключи из allKeys (everyMinutes вместо every_minutes).
+    func camelToSnakeCase() -> String {
+        var result = ""
+        for (i, ch) in self.enumerated() {
+            if ch.isUppercase && i > 0 {
+                result += "_" + ch.lowercased()
+            } else {
+                result += ch.lowercased()
+            }
+        }
+        return result
+    }
+}
+
 private struct AnyCodingKey: CodingKey {
     let stringValue: String
     let intValue: Int? = nil
@@ -38,18 +55,19 @@ extension AssistantFunctionCall: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.name = try c.decode(String.self, forKey: .name)
 
-        // GigaChat отдаёт arguments как JSON-объект, нормализуем в строку.
-        if let str = try? c.decode(String.self, forKey: .arguments) {
-            // Редкий случай: уже строка
-            self.arguments = str
-        } else if let nestedC = try? c.nestedContainer(keyedBy: AnyCodingKey.self, forKey: .arguments) {
-            // Стандартный случай: JSON-объект → собираем словарь → сериализуем
-            var dict: [String: String] = [:]
+        // GigaChat отдаёт arguments как JSON-объект — сохраняем типы как есть.
+        // ВАЖНО: decoder использует convertFromSnakeCase, поэтому allKeys возвращает
+        // уже сконвертированные ключи: every_minutes → everyMinutes.
+        // Конвертируем обратно в snake_case чтобы сервер получил оригинальные имена.
+        if let nestedC = try? c.nestedContainer(keyedBy: AnyCodingKey.self, forKey: .arguments) {
+            var dict: [String: Any] = [:]
             for key in nestedC.allKeys {
-                if let v = try? nestedC.decode(String.self, forKey: key)  { dict[key.stringValue] = v }
-                else if let v = try? nestedC.decode(Int.self, forKey: key)    { dict[key.stringValue] = String(v) }
-                else if let v = try? nestedC.decode(Double.self, forKey: key) { dict[key.stringValue] = String(v) }
-                else if let v = try? nestedC.decode(Bool.self, forKey: key)   { dict[key.stringValue] = String(v) }
+                let apiKey = key.stringValue.camelToSnakeCase()
+                // Bool до Int — иначе true/false могут задекодироваться как 1/0
+                if let v = try? nestedC.decode(Bool.self,   forKey: key) { dict[apiKey] = v }
+                else if let v = try? nestedC.decode(Int.self,    forKey: key) { dict[apiKey] = v }
+                else if let v = try? nestedC.decode(Double.self, forKey: key) { dict[apiKey] = v }
+                else if let v = try? nestedC.decode(String.self, forKey: key) { dict[apiKey] = v }
             }
             let data = (try? JSONSerialization.data(withJSONObject: dict)) ?? Data()
             self.arguments = String(data: data, encoding: .utf8) ?? "{}"
@@ -123,7 +141,7 @@ nonisolated struct Message: Sendable, Identifiable {
     }
 }
 
-// MARK: Codable
+// MARK: - Codable (локальное хранение — полный набор полей)
 
 extension Message: Codable {
     private enum CodingKeys: String, CodingKey {
@@ -136,18 +154,16 @@ extension Message: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
 
         // Локальные поля — нет в API-ответах GigaChat, используем дефолты.
-        self.id                 = (try? c.decode(UUID.self,  forKey: .id))                ?? UUID()
+        self.id                 = (try? c.decode(UUID.self,  forKey: .id))                 ?? UUID()
         self.isTransitionMarker = (try? c.decode(Bool.self,  forKey: .isTransitionMarker)) ?? false
         self.isStageContext     = (try? c.decode(Bool.self,  forKey: .isStageContext))     ?? false
         self.timestamp          = (try? c.decode(Date.self,  forKey: .timestamp))          ?? Date()
 
-        // API-поля — обязательны в API-ответах, опциональны в локальном хранилище.
-        self.role               = try c.decode(Role.self,    forKey: .role)
-        self.content            = (try? c.decode(String.self, forKey: .content))           ?? ""
-        self.name               = try? c.decode(String.self, forKey: .name)
+        // API-поля.
+        self.role    = try c.decode(Role.self,    forKey: .role)
+        self.content = (try? c.decode(String.self, forKey: .content)) ?? ""
+        self.name    = try? c.decode(String.self, forKey: .name)
 
-        // function_call: декодируем напрямую (без лишнего try?decodeIfPresent),
-        // бросаем ошибку только если поле есть, но не декодируется.
         if c.contains(.functionCall) {
             self.functionCall = try? c.decode(AssistantFunctionCall.self, forKey: .functionCall)
         } else {
@@ -155,17 +171,51 @@ extension Message: Codable {
         }
     }
 
+    /// Полное кодирование — используется ТОЛЬКО для локального хранения (MessageStorage).
     func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        // Локальные поля (только для хранения, GigaChat игнорирует)
         try c.encode(id,                 forKey: .id)
         try c.encode(isTransitionMarker, forKey: .isTransitionMarker)
         try c.encode(isStageContext,     forKey: .isStageContext)
         try c.encode(timestamp,          forKey: .timestamp)
-        // API-поля
         try c.encode(role,               forKey: .role)
         try c.encode(content,            forKey: .content)
         try c.encodeIfPresent(functionCall, forKey: .functionCall)
         try c.encodeIfPresent(name,         forKey: .name)
     }
+}
+
+// MARK: - APIMessage (отправляется в GigaChat — только поля из документации)
+
+/// Лёгкое DTO для API-запросов. Содержит только поля которые принимает GigaChat:
+/// `role`, `content`, `name`, `function_call`.
+nonisolated struct APIMessage: Encodable, Sendable {
+    let role:         Role
+    let content:      String
+    let functionCall: AssistantFunctionCall?
+    let name:         String?
+
+    init(from message: Message) {
+        self.role         = message.role
+        self.content      = message.content
+        self.functionCall = message.functionCall
+        self.name         = message.name
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(role,    forKey: .role)
+        try c.encode(content, forKey: .content)
+        try c.encodeIfPresent(functionCall, forKey: .functionCall)
+        try c.encodeIfPresent(name,         forKey: .name)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case role, content, functionCall, name
+    }
+}
+
+extension Array where Element == Message {
+    /// Конвертирует массив `Message` в `[APIMessage]` для отправки в GigaChat.
+    var asAPIMessages: [APIMessage] { map { APIMessage(from: $0) } }
 }

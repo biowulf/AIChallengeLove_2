@@ -92,6 +92,11 @@ final class MCPManager {
     var statusByServer: [UUID: String]        = [:]
     var isConnecting: Bool = false
 
+    /// Вызывается при получении push-события с MCP-сервера (notifications/message).
+    /// Параметр — строка с данными события (JSON погоды, напоминание и т.п.)
+    @ObservationIgnored
+    var onPushNotification: (@MainActor (String) -> Void)?
+
     /// Живые MCP-клиенты (key = serverID).
     /// Хранятся для последующих вызовов callTool без переподключения.
     private var clientsByServer: [UUID: Client] = [:]
@@ -150,6 +155,28 @@ final class MCPManager {
         do {
             let transport = HTTPClientTransport(endpoint: url, streaming: true)
             let client    = Client(name: "AIChallengeLove", version: "1.0.0")
+
+            // Подписываемся на push-уведомления ДО connect(),
+            // чтобы не пропустить события при инициализации сессии.
+            await client.onNotification(LogMessageNotification.self) { [weak self] message in
+                guard let self else { return }
+                let params = message.params
+                // Извлекаем строку из data: Value
+                let eventString: String
+                if case .string(let s) = params.data {
+                    eventString = s
+                } else if let data = try? JSONEncoder().encode(params.data),
+                          let s = String(data: data, encoding: .utf8) {
+                    eventString = s
+                } else {
+                    return
+                }
+                print("[MCP Push] notification/message received: \(eventString.prefix(120))")
+                await MainActor.run {
+                    self.onPushNotification?(eventString)
+                }
+            }
+
             try await client.connect(transport: transport)
 
             statusByServer[config.id] = "Получение инструментов..."
