@@ -34,7 +34,7 @@ struct MCPToolInfo: Identifiable {
         var requiredFields: [String] = []
 
         if case .object(let schema) = inputSchema {
-            // Извлекаем properties: { "properties": { "location": { "type": "string", "description": "..." } } }
+            // Извлекаем properties: { "properties": { "param": { "type": "...", "description": "..." } } }
             if case .object(let properties) = schema["properties"] {
                 for (propName, propValue) in properties {
                     if case .object(let propDict) = propValue {
@@ -42,7 +42,32 @@ struct MCPToolInfo: Identifiable {
                         if case .string(let t) = propDict["type"] { propType = t } else { propType = "string" }
                         let propDesc: String
                         if case .string(let d) = propDict["description"] { propDesc = d } else { propDesc = propName }
-                        props[propName] = GigaFunctionProperty(type: propType, description: propDesc)
+
+                        // Для массивов извлекаем схему элементов (items.properties)
+                        var arrayItems: GigaFunctionArrayItems? = nil
+                        if propType == "array", case .object(let itemsDict) = propDict["items"] {
+                            let itemsType: String
+                            if case .string(let t) = itemsDict["type"] { itemsType = t } else { itemsType = "object" }
+
+                            var itemProps: [String: GigaFunctionProperty] = [:]
+                            if case .object(let itemProperties) = itemsDict["properties"] {
+                                for (iPropName, iPropValue) in itemProperties {
+                                    if case .object(let iPropDict) = iPropValue {
+                                        let iType: String
+                                        if case .string(let t) = iPropDict["type"] { iType = t } else { iType = "string" }
+                                        let iDesc: String
+                                        if case .string(let d) = iPropDict["description"] { iDesc = d } else { iDesc = iPropName }
+                                        itemProps[iPropName] = GigaFunctionProperty(type: iType, description: iDesc)
+                                    }
+                                }
+                            }
+                            arrayItems = GigaFunctionArrayItems(
+                                type: itemsType,
+                                properties: itemProps.isEmpty ? nil : itemProps
+                            )
+                        }
+
+                        props[propName] = GigaFunctionProperty(type: propType, description: propDesc, items: arrayItems)
                     }
                 }
             }
@@ -54,8 +79,7 @@ struct MCPToolInfo: Identifiable {
             }
         }
 
-        guard !props.isEmpty else { return nil }
-
+        // Инструменты без параметров (например get_current_date) тоже передаём — props может быть пустым
         return GigaFunction(
             name: name,
             description: desc,
@@ -215,14 +239,12 @@ final class MCPManager {
             throw MCPManagerError.toolNotFound(name)
         }
 
-        // Распарсить JSON-строку аргументов → [String: Value]
+        // Распарсить JSON-строку аргументов → [String: Value] (рекурсивно, поддерживает массивы и объекты)
         var mcpArgs: [String: Value] = [:]
         if let data = jsonArguments.data(using: .utf8),
            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             for (key, val) in dict {
-                if let s = val as? String  { mcpArgs[key] = .string(s)   }
-                else if let i = val as? Int    { mcpArgs[key] = .int(i)   }
-                else if let d = val as? Double { mcpArgs[key] = .double(d) }
+                if let value = Self.anyToMCPValue(val) { mcpArgs[key] = value }
             }
         }
 
@@ -239,6 +261,28 @@ final class MCPManager {
 
         print("[MCP] Tool '\(name)' result: \(text.prefix(200))")
         return text
+    }
+
+    // MARK: - Value Conversion
+
+    /// Рекурсивно конвертирует Any (из JSONSerialization) в MCP Value.
+    /// Поддерживает строки, числа, булевы, массивы и вложенные объекты.
+    private static func anyToMCPValue(_ any: Any) -> Value? {
+        if let s = any as? String  { return .string(s) }
+        if let b = any as? Bool    { return .bool(b) }
+        if let i = any as? Int     { return .int(i) }
+        if let d = any as? Double  { return .double(d) }
+        if let arr = any as? [Any] {
+            return .array(arr.compactMap { anyToMCPValue($0) })
+        }
+        if let dict = any as? [String: Any] {
+            var obj: [String: Value] = [:]
+            for (k, v) in dict {
+                if let value = anyToMCPValue(v) { obj[k] = value }
+            }
+            return .object(obj)
+        }
+        return nil
     }
 
     // MARK: - Server Management

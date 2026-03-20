@@ -26,11 +26,31 @@ struct MessageBubble: View {
     }
 
     var body: some View {
-        if message.isTransitionMarker {
+        if message.isToolLog {
+            toolLogView
+        } else if message.isTransitionMarker {
             transitionMarkerView
         } else {
             regularMessageView
         }
+    }
+
+    // MARK: - Tool Log
+
+    /// Лог вызова MCP-инструмента: виден в чате, в API не уходит.
+    private var toolLogView: some View {
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.orange.opacity(0.7))
+                .frame(width: 3)
+            Text(message.content)
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
     }
 
     // MARK: - Transition Marker

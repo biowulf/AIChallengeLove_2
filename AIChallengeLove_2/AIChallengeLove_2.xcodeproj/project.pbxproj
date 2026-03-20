@@ -15,22 +15,9 @@
 		259A43FF2F4348410091555B /* AIChallengeLove_2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AIChallengeLove_2.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		2546F06A2F66905A004F966B /* Exceptions for "AIChallengeLove_2" folder in "AIChallengeLove_2" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				"AIChallengeLove-2-Info.plist",
-			);
-			target = 259A43FE2F4348410091555B /* AIChallengeLove_2 */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		259A44012F4348410091555B /* AIChallengeLove_2 */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				2546F06A2F66905A004F966B /* Exceptions for "AIChallengeLove_2" folder in "AIChallengeLove_2" target */,
-			);
 			path = AIChallengeLove_2;
 			sourceTree = "<group>";
 		};
@@ -289,7 +276,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "AIChallengeLove-2-Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -330,7 +317,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "AIChallengeLove-2-Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";

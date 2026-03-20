@@ -92,6 +92,31 @@ nonisolated struct GigaFunctionParameters: Encodable, Sendable {
 nonisolated struct GigaFunctionProperty: Encodable, Sendable {
     let type: String
     let description: String
+    /// Для полей типа "array" — схема одного элемента массива.
+    let items: GigaFunctionArrayItems?
+
+    init(type: String, description: String, items: GigaFunctionArrayItems? = nil) {
+        self.type        = type
+        self.description = description
+        self.items       = items
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(type,        forKey: .type)
+        try c.encode(description, forKey: .description)
+        try c.encodeIfPresent(items, forKey: .items)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type, description, items
+    }
+}
+
+/// Схема элементов массива (items в JSON Schema).
+nonisolated struct GigaFunctionArrayItems: Encodable, Sendable {
+    let type: String
+    let properties: [String: GigaFunctionProperty]?
 }
 
 nonisolated struct GigaFunctionExample: Encodable, Sendable {
