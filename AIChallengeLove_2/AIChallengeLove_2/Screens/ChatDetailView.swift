@@ -38,6 +38,9 @@ struct ChatDetailView: View {
                 if viewModel.isShowMCPPanel {
                     MCPSettingsView(mcpManager: viewModel.mcpManager)
                 }
+                if viewModel.isShowRAGPanel {
+                    RAGIndexView(viewModel: viewModel.ragViewModel)
+                }
             }
         }
     }
@@ -122,6 +125,20 @@ struct ChatDetailView: View {
                         if viewModel.mcpManager.isEnabled {
                             Circle()
                                 .fill(viewModel.mcpManager.isConnecting ? Color.orange : Color.teal)
+                                .frame(width: 7, height: 7)
+                                .offset(x: 4, y: -3)
+                        }
+                    }
+                }
+
+                Button {
+                    viewModel.isShowRAGPanel.toggle()
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                        if viewModel.ragViewModel.totalIndexed > 0 {
+                            Circle()
+                                .fill(Color.purple)
                                 .frame(width: 7, height: 7)
                                 .offset(x: 4, y: -3)
                         }

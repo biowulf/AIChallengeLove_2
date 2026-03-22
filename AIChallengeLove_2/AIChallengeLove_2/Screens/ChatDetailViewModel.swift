@@ -85,6 +85,10 @@ final class ChatDetailViewModel {
     // System Prompt (unified profile + invariants)
     var isShowSystemPromptPanel = false
 
+    // RAG
+    var isShowRAGPanel = false
+    var ragViewModel = RAGIndexViewModel()
+
     // MCP
     var isShowMCPPanel = false
     var mcpManager = MCPManager()
