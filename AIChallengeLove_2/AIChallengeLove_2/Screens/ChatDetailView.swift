@@ -39,7 +39,13 @@ struct ChatDetailView: View {
                     MCPSettingsView(mcpManager: viewModel.mcpManager)
                 }
                 if viewModel.isShowRAGPanel {
-                    RAGIndexView(viewModel: viewModel.ragViewModel)
+                    RAGIndexView(
+                        viewModel: viewModel.ragViewModel,
+                        isRAGEnabled: Binding(get: { viewModel.isRAGEnabled }, set: { viewModel.isRAGEnabled = $0 }),
+                        ragTopK: Binding(get: { viewModel.ragTopK }, set: { viewModel.ragTopK = $0 }),
+                        ragScoreThreshold: Binding(get: { viewModel.ragScoreThreshold }, set: { viewModel.ragScoreThreshold = $0 }),
+                        ragFilterStrategy: Binding(get: { viewModel.ragFilterStrategy }, set: { viewModel.ragFilterStrategy = $0 })
+                    )
                 }
             }
         }

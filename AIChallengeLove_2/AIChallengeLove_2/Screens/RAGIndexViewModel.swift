@@ -240,6 +240,13 @@ final class RAGIndexViewModel {
         isBrowseLoaded = true
     }
 
+    // MARK: - RAG Pipeline Bridge
+
+    /// Поиск по вектору — публичный мост для ChatDetailViewModel
+    func searchChunks(embedding: [Float], topK: Int, strategy: ChunkStrategy?) throws -> [(DocumentChunk, Float)] {
+        try ragIndex.search(queryEmbedding: embedding, topK: topK, strategy: strategy)
+    }
+
     // MARK: - Статистика
 
     func refreshStats() {

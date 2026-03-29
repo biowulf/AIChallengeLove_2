@@ -10,10 +10,17 @@ import SwiftUI
 struct RAGIndexView: View {
     @Bindable var viewModel: RAGIndexViewModel
 
+    @Binding var isRAGEnabled: Bool
+    @Binding var ragTopK: Int
+    @Binding var ragScoreThreshold: Float
+    @Binding var ragFilterStrategy: ChunkStrategy?
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 headerSection
+                Divider()
+                pipelineSection
                 Divider()
                 importSection
                 Divider()
@@ -51,6 +58,69 @@ struct RAGIndexView: View {
                 .font(.caption2)
                 .foregroundStyle(viewModel.isOllamaAvailable ? .green : .red)
         }
+    }
+
+    // MARK: - Pipeline
+
+    private var pipelineSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("RAG Pipeline").font(.subheadline).bold()
+                Spacer()
+                Toggle("", isOn: $isRAGEnabled)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .tint(.purple)
+            }
+
+            if isRAGEnabled {
+                HStack {
+                    Text("Топ-K чанков")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Stepper("\(ragTopK)", value: $ragTopK, in: 1...20)
+                        .font(.caption)
+                }
+
+                HStack(spacing: 6) {
+                    Text("Мин. score")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Slider(value: $ragScoreThreshold, in: 0.5...0.95, step: 0.01)
+                        .tint(.purple)
+                    Text(String(format: "%.2f", ragScoreThreshold))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Стратегия поиска")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $ragFilterStrategy) {
+                        Text("Все").tag(ChunkStrategy?.none)
+                        Text("Фикс.").tag(ChunkStrategy?.some(.fixedSize))
+                        Text("Структурная").tag(ChunkStrategy?.some(.structural))
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                if viewModel.totalIndexed == 0 {
+                    Label("Индекс пуст — загрузи документы", systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                } else if !viewModel.isOllamaAvailable {
+                    Label("Ollama недоступна — запусти локально", systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .padding(8)
+        .background(isRAGEnabled ? Color.purple.opacity(0.08) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - Импорт

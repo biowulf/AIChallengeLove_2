@@ -89,6 +89,13 @@ final class ChatDetailViewModel {
     var isShowRAGPanel = false
     var ragViewModel = RAGIndexViewModel()
 
+    // RAG Pipeline
+    var isRAGEnabled = false
+    var ragTopK: Int = 8
+    var ragScoreThreshold: Float = 0.72
+    var ragFilterStrategy: ChunkStrategy? = nil
+    var lastRAGChunks: [(DocumentChunk, Float)] = []
+
     // MCP
     var isShowMCPPanel = false
     var mcpManager = MCPManager()
@@ -188,6 +195,75 @@ final class ChatDetailViewModel {
         }
     }
 
+    // MARK: - RAG Pipeline
+
+    /// Строит системный Message с топ-K релевантными чанками для переданного запроса.
+    /// Возвращает nil, если RAG отключён, Ollama недоступна или индекс пуст.
+    private func buildRAGContext(for query: String) async -> Message? {
+        guard isRAGEnabled else { return nil }
+        let ollama = OllamaService.shared
+        guard await ollama.ping() else {
+            print("[RAG] Ollama недоступна, пропускаем RAG-контекст")
+            return nil
+        }
+        do {
+            let embedding = try await ollama.embed(text: query)
+            let results = try ragViewModel.searchChunks(
+                embedding: embedding, topK: ragTopK, strategy: ragFilterStrategy
+            )
+            // Отсекаем чанки ниже порога — они шумят в промпте и сбивают LLM
+            let filtered = results.filter { $0.1 >= ragScoreThreshold }
+            guard !filtered.isEmpty else { return nil }
+            lastRAGChunks = filtered
+
+            let context = filtered
+                .enumerated()
+                .map { i, pair in
+                    let (chunk, score) = pair
+                    return "[\(i + 1)] (score: \(String(format: "%.3f", score)), source: \(chunk.metadata.source))\n\(chunk.content)"
+                }
+                .joined(separator: "\n\n---\n\n")
+
+            return Message(
+                role: .system,
+                content: "Используй следующие фрагменты документов как дополнительный контекст для ответа:\n\n\(context)"
+            )
+        } catch {
+            print("[RAG] buildRAGContext error: \(error)")
+            return nil
+        }
+    }
+
+    /// Асинхронный путь отправки с RAG: получает контекст, инжектирует его перед user-сообщением, затем отправляет.
+    @MainActor
+    private func performSendWithRAG(userQuery: String) async {
+        lastRAGChunks = []
+        let ragMessage = await buildRAGContext(for: userQuery)
+
+        var messagesToSend = prepareMessagesForAPI()
+
+        if let rag = ragMessage {
+            // System message обязан быть на позиции 0.
+            // Мержим RAG-контекст в существующий system или вставляем первым.
+            if let sysIdx = messagesToSend.firstIndex(where: { $0.role == .system }) {
+                let existing = messagesToSend[sysIdx]
+                messagesToSend[sysIdx] = Message(
+                    role: .system,
+                    content: existing.content + "\n\n" + rag.content
+                )
+            } else {
+                messagesToSend.insert(rag, at: 0)
+            }
+        }
+
+        sendMessages(messagesToSend) { [weak self] responseMessage in
+            guard let self else { return }
+            appendMessage(responseMessage)
+            persistCurrentMessages()
+            detectTaskMarkers(in: responseMessage.content)
+        }
+    }
+
     // MARK: - Public
 
     /// Возвращает сообщения для отображения в UI.
@@ -258,6 +334,18 @@ final class ChatDetailViewModel {
 
     private func performSend() {
         lastRequestFailed = false
+
+        // RAG: если включён, уходим в асинхронный путь с поиском контекста
+        if isRAGEnabled {
+            let userQuery = messages.last(where: { $0.role == .user })?.content ?? ""
+            if !userQuery.isEmpty {
+                Task { [weak self] in
+                    guard let self else { return }
+                    await performSendWithRAG(userQuery: userQuery)
+                }
+                return
+            }
+        }
 
         // Проверяем, нужна ли суммаризация перед отправкой (GPT Summary)
         if contextStrategy == .gptSummary {
